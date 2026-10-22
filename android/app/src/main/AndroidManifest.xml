@@ -1,0 +1,115 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Live camera preview + still capture (camera package). The gallery path
+         uses the Android Photo Picker and needs no storage permission. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Needed only to *fetch* the on-device ML Kit translation models the
+         first time a language is used; translation itself always runs offline.
+         OCR needs no network at all: the text-recognition models are the
+         bundled `com.google.mlkit:text-recognition*` artifacts, which are
+         packaged into the APK at build time. Declared in the main manifest so
+         release builds can provision models too, not just debug/profile. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- ML Kit checks connectivity before/when downloading models; without this
+         the model download can fail on some devices. No user-visible effect. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Declare the camera as optional so the app still installs on devices
+         without one; gallery OCR remains available. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <application
+        android:label="pdf_utility_flutter"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <!-- Hands a file the app wrote (a created PDF, in the app's cache) to the
+             system share sheet as a content:// URI.
+
+             Required from Android 7 on: an ACTION_SEND carrying a file:// URI
+             throws FileUriExposedException and would crash the app the moment
+             the user tapped Share. `exported="false"` keeps the provider
+             private to this app — the temporary read grant is what lets the
+             receiving app open the one file it was sent, and nothing else.
+             The allowed roots live in res/xml/file_paths.xml. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Inert for this app, kept deliberately rather than removed.
+
+             `com.google.mlkit.vision.DEPENDENCIES` only pre-downloads models for
+             the *unbundled* ML Kit libraries
+             (`com.google.android.gms:play-services-mlkit-text-recognition-*`),
+             which fetch their model through Google Play Services and can
+             optionally be provisioned at install time. This app uses the
+             *bundled* `com.google.mlkit:text-recognition` (and
+             `:text-recognition-devanagari`) artifacts instead, whose models are
+             statically linked at build time and available immediately, so there
+             is nothing to download and this entry does nothing.
+
+             It is left in place because removing it changes no behaviour, and
+             it becomes meaningful again if OCR is ever switched to the
+             unbundled variant to shrink the APK. The old comment here claimed
+             this entry avoided a model download — that was wrong. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="ocr" />
+
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <!-- Needed on Android 11+ so the debug diagnostics can read the installed
+             Google Play Services version (the ML Kit model-download backend). -->
+        <package android:name="com.google.android.gms"/>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Required by url_launcher on Android 11+ so the "Search" selection
+             action can resolve a browser for https URLs. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
+        </intent>
+    </queries>
+</manifest>

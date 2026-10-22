@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paths the app is allowed to hand to other apps through a content:// URI.
+
+  Used by `MainActivity.shareFile` when sharing a created PDF: the file lives in
+  the app's cache, which no other app can read, so the share sheet is given a
+  FileProvider URI instead. Keeping the roots as broad as the app's own
+  storage is safe here — `exported="false"` on the provider means only this app
+  can mint these URIs, and each one is handed out with a temporary read grant.
+-->
+<paths>
+    <!-- Generated PDFs (Directory.systemTemp / the app's cache directory). -->
+    <cache-path name="cache" path="." />
+    <!-- Files the app wrote into its own data directory. -->
+    <files-path name="files" path="." />
+    <!-- App-specific external storage (used on Android 9 and older, where
+         exports go to getExternalFilesDir() instead of MediaStore). -->
+    <external-files-path name="external_files" path="." />
+</paths>
