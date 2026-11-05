@@ -115,9 +115,13 @@ void main() {
   test('a very high threshold keeps overlapping readings apart', () {
     // Intersection over union here is about 0.95, so a threshold of 1 leaves
     // both readings alone: the threshold is a real knob, not decoration.
+    //
+    // The Latin candidate is a real phrase rather than symbol soup, because
+    // this test is about the *threshold*: a fragmented reading is refused
+    // elsewhere (see the junk tests), which would hide the knob's effect.
     const strict = OcrMergePolicy(overlapIouThreshold: 1);
     final latin = _result(<(String, OcrRect)>[
-      ('sTqT', OcrRect.fromLTRB(0, 100, 400, 140)),
+      ('English line', OcrRect.fromLTRB(0, 100, 400, 140)),
     ]);
     final devanagari = _result(<(String, OcrRect)>[
       ('नमस्ते', OcrRect.fromLTRB(10, 100, 410, 140)),
@@ -170,7 +174,108 @@ void main() {
     expect(merged.elapsed, const Duration(milliseconds: 4321));
   });
 
-  test('rebuilds one block per surviving line, with word geometry intact', () {
+  test('appends a real English heading the Devanagari pass never read', () {
+    // The common mixed document: an English heading above Hindi body text. The
+    // Devanagari model cannot emit those letters, so the Latin reading is the
+    // only witness and must survive.
+    final latin = _result(<(String, OcrRect)>[
+      ('Quarterly Report', OcrRect.fromLTRB(0, 0, 400, 30)),
+    ]);
+    final devanagari = _result(<(String, OcrRect)>[
+      ('नमस्ते दुनिया', _box(300)),
+    ]);
+
+    final merged = policy.merge(primary: latin, secondary: devanagari);
+
+    expect(texts(merged), <String>['Quarterly Report', 'नमस्ते दुनिया']);
+  });
+
+  test('appends a short abbreviation heading, which is printed in capitals', () {
+    // `PDF`, `NOC`, `RTI`: two to six capitals are how abbreviations and short
+    // headings appear in real forms. They are shorter than any word-length
+    // floor, so they are accepted on their shape alone.
+    for (final heading in <String>['PDF', 'NOC', 'RTI 2022']) {
+      final latin = _result(<(String, OcrRect)>[
+        (heading, OcrRect.fromLTRB(0, 0, 400, 30)),
+      ]);
+      final devanagari = _result(<(String, OcrRect)>[
+        ('नमस्ते दुनिया', _box(300)),
+      ]);
+
+      final merged = policy.merge(primary: latin, secondary: devanagari);
+
+      expect(texts(merged), contains(heading));
+    }
+  });
+
+  test('appends an ordinary short label, such as a form field name', () {
+    // Four letters is the floor for a lower-case word: `Name`, `Total`, `Date`
+    // are real labels on a Hindi form, and a fragment that short but scrambled
+    // is rejected below.
+    final latin = _result(<(String, OcrRect)>[
+      ('Name', OcrRect.fromLTRB(0, 0, 200, 30)),
+    ]);
+    final devanagari = _result(<(String, OcrRect)>[
+      ('नमस्ते दुनिया', _box(300)),
+    ]);
+
+    final merged = policy.merge(primary: latin, secondary: devanagari);
+
+    expect(texts(merged), contains('Name'));
+  });
+
+  test('never appends the fragments this engine emits over Devanagari', () {
+    // Verbatim output of the Latin recognizer pointed at a Hindi newspaper page
+    // (recorded in `test/fixtures/ocr/newspaper_hindi_three_columns.json`).
+    // None of these is text on the page, so none may be invented into the
+    // result when its box happens not to collide with a Devanagari line.
+    const junk = <String>[
+      'far',
+      'Hhcill',
+      'fufat H BH, 2022 fr44 3',
+      'vy 28-08-2025',
+      'sTqT',
+    ];
+
+    for (final fragment in junk) {
+      final latin = _result(<(String, OcrRect)>[
+        (fragment, OcrRect.fromLTRB(0, 0, 400, 30)),
+      ]);
+      final devanagari = _result(<(String, OcrRect)>[
+        ('नमस्ते दुनिया', _box(300)),
+      ]);
+
+      final merged = policy.merge(primary: latin, secondary: devanagari);
+
+      expect(
+        texts(merged),
+        isNot(contains(fragment)),
+        reason: '"$fragment" was invented into the result',
+      );
+      expect(
+        merged.fullText,
+        isNot(contains(fragment)),
+        reason: '"$fragment" reached the text',
+      );
+    }
+  });
+
+  test('keeps a Hindi line even when the Latin pass read it as symbols', () {
+    // The collision rule, on real geometry: the Devanagari reading of a region
+    // wins over the Latin reading of the same region.
+    final latin = _result(<(String, OcrRect)>[
+      ('fufat H BH, 2022 fr44 3', OcrRect.fromLTRB(0, 0, 400, 30)),
+    ]);
+    final devanagari = _result(<(String, OcrRect)>[
+      ('नियम 2022 का लाभ मिलेगा', OcrRect.fromLTRB(2, 0, 398, 30)),
+    ]);
+
+    final merged = policy.merge(primary: latin, secondary: devanagari);
+
+    expect(texts(merged), <String>['नियम 2022 का लाभ मिलेगा']);
+  });
+
+  test('keeps one block per line when that is what the base read', () {
     final latin = _result(<(String, OcrRect)>[('English', _box(0))]);
     final devanagari = _result(<(String, OcrRect)>[('हिन्दी', _box(200))]);
 
@@ -180,8 +285,52 @@ void main() {
     for (final block in merged.blocks) {
       expect(block.lines, hasLength(1));
       expect(block.lines.single.elements, hasLength(1));
-      // Word geometry is carried over verbatim; only grouping is re-built.
+      // Word geometry is carried over verbatim.
       expect(block.lines.single.elements.single.boundingBox, block.boundingBox);
     }
+  });
+
+  test('keeps a paragraph the base pass read as one multi-line block', () {
+    // Rebuilding the result as one block per line — the earlier behaviour —
+    // turned the recorded three-column newspaper page into 79 fragments and
+    // made its translation jump between columns. A multi-line block must stay
+    // a block.
+    OcrRect box(double top) => OcrRect.fromLTRB(0, top, 400, top + 30);
+    final lines = <OcrLine>[
+      for (var index = 0; index < 3; index++)
+        OcrLine(
+          text: 'हिन्दी पंक्ति $index',
+          boundingBox: box(index * 32),
+          elements: <OcrElement>[
+            OcrElement(
+              text: 'हिन्दी पंक्ति $index',
+              boundingBox: box(index * 32),
+            ),
+          ],
+        ),
+    ];
+    final devanagari = OcrResult(
+      sourceImage: const SourceImageInfo(
+        path: '/tmp/does-not-exist.jpg',
+        width: 1000,
+        height: 1000,
+      ),
+      fullText: lines.map((line) => line.text).join('\n'),
+      blocks: <OcrBlock>[
+        OcrBlock(
+          text: lines.map((line) => line.text).join('\n'),
+          boundingBox: OcrRect.fromLTRB(0, 0, 400, 94),
+          lines: lines,
+        ),
+      ],
+    );
+
+    final merged = policy.merge(
+      primary: _result(const <(String, OcrRect)>[]),
+      secondary: devanagari,
+    );
+
+    expect(merged.blocks, hasLength(1));
+    expect(merged.blocks.single.lines, hasLength(3));
   });
 }

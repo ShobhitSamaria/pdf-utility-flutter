@@ -217,39 +217,166 @@ and it can return one block for the whole page. Building the readable text or th
 page translation directly from that order is what made Hindi→English output jump
 between columns and read as disconnected fragments.
 
-`OcrDocumentLayout` (`lib/ocr/domain/ocr_document_layout.dart`) recovers the
-structure from geometry alone, so it works for any document type:
+**Block boxes are not usable units either.** On the three-column Hindi page
+recorded in `test/fixtures/ocr/newspaper_hindi_three_columns.json` the masthead,
+deck and headline are single blocks 754, 1001 and 1003 px wide on a 1080 px page:
+those boxes bridge every gutter, so a column cut computed over block boxes sees
+one column and falls back to top-then-left — the row-by-row interleaving that
+looked like "the middle column is missing".
 
-* **Columns first** — the page is split at vertical free channels (gutters) that
-  run the full height of the region, and the resulting columns are read left to
-  right. Looking for gutters *before* horizontal splits is what stops two
-  columns whose paragraph gaps line up from being read row by row.
-* **Then bands** — a full-width headline blocks every gutter, so it is separated
-  by the largest horizontal free band and read before the body beneath it.
-* **Then top-to-bottom** — a single column with no clear gaps is read down.
-* **Tables** — when the gutter-separated bands behave like a grid (short,
-  single-line cells aligned across columns) they are read row by row, so a table
-  or receipt does not become one column after another. A run of prose in a
-  column is recognised by its tall multi-line blocks and is never mistaken for a
-  grid.
-* **Paragraphs** — neighbouring lines of one column are grouped when they are
-  vertically tight (within 0.8 of a line height) and typographically alike
-  (line-height ratio ≥ 0.7), so a heading or a caption is not glued onto the body
-  under it. A group carries a stable id, its lines and the union rectangle.
-  Paragraphs are formed over the **whole ordered page**, not block by block: ML
-  Kit regularly cuts one printed paragraph at a block boundary, and paragraphing
-  each block in isolation split one sentence into two translation units. An
-  across-block join additionally requires a leading-sized gap (≤ 0.45 of a line)
-  and at least one multi-line block on either side, so two tightly stacked table
-  cells or list rows are never merged into one row-spanning paragraph. Lines
-  inside a block are ordered with the same whitespace cut as the page, because a
-  single block can itself span two columns.
+`OcrDocumentLayout` (`lib/ocr/domain/ocr_document_layout.dart`) recovers the
+structure in **two separate passes**, because conflating them is what broke the
+second real page:
+
+1. **Group** the recognized lines into paragraphs from *local* geometry. Nothing
+   here depends on where a line sits in a page-wide order, so an ordering mistake
+   can no longer shred a paragraph into one block per line.
+2. **Order** those paragraphs, recursively, from the structure each region
+   actually has.
+
+### 1. Paragraph chains
+
+A run (one printed row: a line, or the two halves of a line the engine split)
+claims at most one successor — the nearest eligible run below it — and is claimed
+by at most one predecessor. Eligible means:
+
+* same column (x-overlap ≥ 0.5 of the narrower box) and the same left margin, or
+  the same centre for centred text (tolerance 2.5 × the median line height);
+* within ordinary leading (≤ 0.8 of a line, and never a whole line apart);
+* the same type size (height ratio ≥ 0.7) and the same *class* of type — display
+  type (≥ 1.4 × the median line) never chains to body text, which is what keeps a
+  sidebar's title out of the headline beside it;
+* not refused by the **block-boundary** rules: across an ML Kit block boundary the
+  gap must be leading-sized (≤ 0.45), and two single-line blocks may only rejoin
+  when neither has a partner on its own row (a table cell has one, a wrapped
+  address does not) **and** the text shows the wrap — the next line starts in
+  lowercase, or the previous ends with a hyphen, comma, slash or a dangling
+  capital (`… First Floor, S` + `ector-76 …`). Caseless scripts (Devanagari,
+  Tamil, Telugu …) have no case cue at all, so there the geometry alone decides;
+  a table row is still protected by the row-partner rule, which is geometric.
+
+A chain carries a stable id, its lines and the union rectangle.
+
+### 2. Ordering, re-measured per region
+
+Each region is inspected for the strongest structure it still has:
+
+* **Display type is an anchor.** Headlines, decks and sidebar titles are placed by
+  their own vertical position: everything ending above an anchor is read first,
+  then the anchor. That is what keeps a headline's two boxes *above* the columns
+  they span even when the halves are separate blocks.
+* **Vertical gutters.** The widest free channel with real text on both sides
+  splits the region into columns, read left to right. A channel must also be free
+  *vertically* for at least 30 % of the region's height, which is what stops the
+  middle of one tall box from being mistaken for a gap; a channel crossed by a
+  minority of items (≤ 40 %) is still a gutter, and the items crossing it become
+  anchors.
+* **Horizontal bands.** With no gutter, a free horizontal band at least 0.9 of a
+  line tall splits the region into stacked sections, read top to bottom. The
+  threshold is what keeps a column in one piece: paragraph gaps inside a column
+  are two or three pixels, while the space between a headline and the body under
+  it, or between the body and a footer, is a whole line.
+* **Columns that do not overlap vertically are not parallel.** When merging two
+  column runs, a block that finishes above where the other starts is read first,
+  so a letter's date and reference come before its body and a signature comes
+  after it.
+* **Grids.** A pair of side-by-side runs whose items are short, single-line and
+  row-aligned is a table or form and is read row by row instead.
+* **Fallback.** A region with no structure at all is read top to bottom.
+
+Thresholds are expressed as fractions of the page's own median line height, never
+as absolute pixels, so a phone photo and a PDF page render at any scale without
+retuning.
+
+### Repeated ink
+
+ML Kit occasionally returns the same printed line twice. On the second recorded
+page, `दिल्ली तक चार राज्यों में फैली` came back together with a 180 px box reading
+`राज्यों में कैली` inside the same row. A line is dropped only when another line
+of the **same block** shares its row, overlaps its box by at least half, and its
+character bigrams overlap by ≥ 0.4 (Dice). Sequential halves of a split headline
+score 0.10 on the same measure, so they are never dropped.
 
 The result is `List<OcrLayoutBlock>` in reading order. Both the readable-text
 sheet and the page translation are built from it; nothing else re-guesses the
 order. Thresholds are expressed as fractions of the page's own median line
 height, never as absolute pixels, so a phone photo and a PDF page render at any
 scale without retuning.
+
+### Verified against the real page
+
+`test/fixtures/ocr/newspaper_hindi_three_columns.json` is the verbatim block and
+line output of both single-script passes over
+`test/assets/real/newspaper_hindi_three_columns.png`, recorded once on a device
+that has ML Kit. `test/recorded_newspaper_page_test.dart` replays it, so reading
+order and merging can be checked in a plain `flutter test` run with no phone and
+no emulator.
+
+| | Before | After |
+| --- | --- | --- |
+| Devanagari pass only | 15 blocks, order jumped 1 → 2 → 3 → 1 → 2 → 3 | 10 paragraphs, 73 body lines in column order, masthead and headline first |
+| Auto (merge of both passes) | **79 one-line blocks, row order** | the same 10 paragraphs as the Devanagari pass; no Latin junk |
+
+### Verified against the second real page
+
+`test/fixtures/ocr/second_page.json` is the same kind of recording for
+`test/assets/real/second_page.png` — a photograph and a story at the top, a
+three-line spanning headline, one wide body column and a boxed sidebar.
+`test/second_page_test.dart` replays it.
+
+| | Before | After |
+| --- | --- | --- |
+| Reading order | single column found, top-then-left fallback | headline above both columns, body column then sidebar |
+| Blocks | **46 one-line blocks from 50 lines** | 12 paragraphs (body 16 lines, sidebar 13, story 5, headline 3) |
+| Duplicated ink | `राज्यों में कैली` translated as its own unit | dropped; all other 49 lines survive exactly once |
+
+The cause was not the same as on the three-column page: there, ML Kit's block
+boxes bridged the gutters; here the story above the page *and* the headline both
+crossed the channel between the body column and the sidebar, so a page-wide
+column cut saw one column. Ordering per region, with display type as anchors,
+fixes both without any image-specific rule.
+
+Replayed in the same `flutter test` run and, separately, on two physical phones
+(a Nothing Phone (2) and an OPPO device) through
+`integration_test/ocr_pipeline_probe_test.dart`: each returns the same 79 lines /
+2602 characters, and the layout produces the same 10 paragraphs in the same
+order. The second page reproduces on the same phones as 49 ordered lines in 12
+paragraphs from the 50 the engine reported.
+
+The test asserts structural properties only — every recognized line survives
+exactly once, no block mixes columns, the column number never goes backwards,
+the headline precedes the body, and none of the four fragments the Latin model
+emitted over this page (`far`, `Hhcill`, `fufat H BH, 2022 fr44 3`,
+`vy 28-08-2025`) appears in the result. Recognition errors inside a line
+(`हाईको्ट` for `हाईकोर्ट`) are the model's and are not something layout can fix.
+
+### Resolution and region OCR: measured, not assumed
+
+The same probe answers whether missing text on this page was a *resolution*
+problem, by recognising the identical content at several scales on a real
+device:
+
+| Input | Lines | Characters |
+| --- | --- | --- |
+| page as-is, 1080 × 1353 | 79 | 2602 |
+| 2× upscale | 79 | 2604 |
+| 3× upscale | 79 | 2605 |
+| three body columns cropped at 2× | 23 + 25 + 25 | 727 + 828 + 890 |
+
+Upscaling changes nothing (three characters out of 2602), and the per-column
+crops find **the same 73 body lines** the full page found — nothing was being
+lost at the recognizer or hidden in the middle of the page. So no upscaling or
+region-splitting step was added: it would cost a second pass and a duplicate-merge
+to recover text that is already being read. The 2× tiles in the same probe do
+return more characters (3286), but that is overlap duplicated across tiles, not
+new text, which is exactly the failure mode a tiled pipeline has to defend
+against and a reason not to build one without evidence.
+
+Where resolution *would* matter is a genuinely small page: ML Kit needs roughly
+16–20 px of line height. The PDF route rasterises at 1600 px wide
+(`PdfPageRaster`), which puts ordinary body text comfortably above that, and a
+phone photograph of a page is far above it. A page whose fine print is still
+being missed is a sample worth having: see `docs/OCR_BENCHMARK.md`.
 
 ## Reading the text instead of the photo
 
@@ -366,9 +493,23 @@ sequentially and handing the pair to `OcrMergePolicy`, which keeps each
 non-colliding line and resolves collisions in favour of the reading that
 contains Devanagari code points (only the Devanagari model emits them), then the
 Latin pass. It never fuses characters or words across engines — that would be
-guessing at text the user is about to copy. Merged results are rebuilt as one
-block per surviving line, so block grouping is lost while word geometry is
-carried over verbatim.
+guessing at text the user is about to copy.
+
+The pass that read more text supplies the **block structure**; the other pass
+only adds lines the base did not read and may replace a base line in place when
+it wins a collision. Word geometry is carried over verbatim. Rebuilding the
+result as one block per surviving line — the earlier behaviour — destroyed every
+paragraph and, on the recorded newspaper page, turned a 12-block page into **79
+one-line blocks in row order**. Those blocks are then ordered by
+`OcrDocumentLayout`, so `fullText` is in reading order rather than engine order.
+
+A line the other pass read that the base did not is appended only when it is
+credible text: Devanagari needs no test, and Latin must be letter-dominated with
+no scrambled token (a capital inside a word, or a letter fused with a digit).
+That keeps a real English heading, a form label or a printed abbreviation
+(`Quarterly Report`, `Name`, `PDF`, `NOC 2022`) while refusing the fragments this
+engine actually emits over Devanagari type. `test/ocr_merge_policy_test.dart`
+covers both directions using those recorded fragments as the junk corpus.
 
 Mixed mode is **off by default and makes no accuracy claim**: the in-app
 benchmark harness exists to measure whether it beats a single pass, and until

@@ -220,6 +220,53 @@ void main() {
       expect(layout[1].text, isNot(contains('GOVERNMENT')));
     });
 
+    test('rejoins a short final line that ends its own block region', () {
+      // What ML Kit actually returned for the last line of a Hindi newspaper
+      // column: `सकता।` has no ascender, matra or descender, so its box is 16 px
+      // tall under a 24 px line (0.67) while it is the same type size. The
+      // height test alone split it off, and the column read as a paragraph
+      // followed by a stray fragment. Its width is what identifies it: a final
+      // line does not fill the measure.
+      final lines = <OcrLine>[
+        _line(
+          'नियम 2022 के अंतर्गत',
+          left: 397,
+          top: 643,
+          right: 715,
+          height: 28,
+        ),
+        _line('नहीं लाया जा', left: 397, top: 672, right: 715, height: 24),
+        _line('सकता।', left: 397, top: 707, right: 457, height: 16),
+      ];
+
+      final layout = OcrDocumentLayout.blocks(_result([_block(lines)]));
+
+      expect(layout, hasLength(1));
+      expect(layout.single.lines, hasLength(3));
+      expect(layout.single.text, endsWith('नहीं लाया जा सकता।'));
+    });
+
+    test('keeps a smaller-type line in the same column out of the paragraph', () {
+      // A byline or a figure caption sits below the text in a smaller face and,
+      // unlike a final line, can be narrow too. What tells them apart is that no
+      // single block holds both: the box below is its own region.
+      final body = <OcrLine>[
+        _line('Applications must be filed', left: 100, top: 100, right: 500),
+        _line('with the department by', left: 100, top: 120, right: 500),
+      ];
+      final byline = [
+        _line('Bhaskar News', left: 100, top: 144, right: 250, height: 12),
+      ];
+
+      final layout = OcrDocumentLayout.blocks(
+        _result([_block(body), _block(byline)]),
+      );
+
+      expect(layout, hasLength(2));
+      expect(layout[0].text, isNot(contains('Bhaskar')));
+      expect(layout[1].text, 'Bhaskar News');
+    });
+
     test('rejoins a paragraph ML Kit split across two blocks', () {
       // Same column, ordinary leading (6 px at a 20 px line): the engine cut
       // this paragraph in two, not the typesetter. Paragraphing each block in
@@ -280,6 +327,160 @@ void main() {
       expect(layout.length, 2);
       expect(layout[0].text, 'Polling team 1');
       expect(layout[1].text, 'Polling team 2');
+    });
+
+    test('joins a wrapped address split across single-line blocks', () {
+      // ML Kit returns each line of a shipping label's return address as its own
+      // block. The text itself shows the wrap (`… First Floor, S` continues as
+      // `ector-76 …`), so the whole address must become one paragraph: six
+      // separate units were translated as six unconnected fragments and drawn as
+      // six boxes, which is what the overlay showed as cut-off text.
+      final layout = OcrDocumentLayout.blocks(
+        _result([
+          _block([
+            _line(
+              'Shipped By (If undelivered, return to)',
+              left: 100,
+              top: 100,
+              right: 600,
+            ),
+            _line(
+              'Near East International LLP',
+              left: 100,
+              top: 122,
+              right: 560,
+            ),
+          ]),
+          _block([
+            _line(
+              'Plot No. 31/13, First Floor, S',
+              left: 100,
+              top: 144,
+              right: 500,
+            ),
+          ]),
+          _block([
+            _line(
+              'ector-76 Main Branch Darbaripur',
+              left: 100,
+              top: 166,
+              right: 520,
+            ),
+          ]),
+          _block([
+            _line('r Road, Joining NH-8', left: 100, top: 188, right: 420),
+          ]),
+          _block([_line('Gurgaon', left: 100, top: 210, right: 240)]),
+        ]),
+      );
+
+      expect(layout.length, 1);
+      expect(
+        layout.single.text,
+        'Shipped By (If undelivered, return to) Near East International LLP '
+        'Plot No. 31/13, First Floor, Sector-76 Main Branch Darbaripur '
+        'r Road, Joining NH-8 Gurgaon',
+      );
+    });
+
+    test('never joins stacked rows that have partners on their row', () {
+      // A form prints its label and its value side by side. Two such rows look
+      // exactly like a wrapped paragraph geometrically, but every line has a
+      // same-row neighbour, which is what marks the region as a grid.
+      final layout = OcrDocumentLayout.blocks(
+        _result([
+          _block([_line('Invoice No. :', left: 100, top: 100, right: 260)]),
+          _block([_line('Retail219038', left: 300, top: 100, right: 520)]),
+          _block([_line('Invoice Date :', left: 100, top: 122, right: 280)]),
+          _block([_line('2026-10-23', left: 300, top: 122, right: 470)]),
+        ]),
+      );
+
+      expect(layout.length, 4);
+      expect(layout.map((block) => block.text), [
+        'Invoice No. :',
+        'Retail219038',
+        'Invoice Date :',
+        '2026-10-23',
+      ]);
+    });
+
+    test('joins the two display-type halves of one printed line', () {
+      // A headline that ML Kit split into a short left box and a long right box.
+      // Both are display type — three times the body line — which is what marks
+      // them as one line even though the left half is narrower than a column.
+      // Translating the halves separately is what produced "Relief, Rule, Rule".
+      // A headline is a small share of a page, and "display type" is measured
+      // against the page's median line height — so the fixture has to look like
+      // a page, not like half a headline and half a column.
+      final body = <OcrLine>[
+        for (var index = 0; index < 9; index++)
+          _line(
+            'Body line ${index + 1}.',
+            left: 100,
+            top: 200.0 + index * 20,
+            right: 500,
+          ),
+      ];
+      final headline = <OcrLine>[
+        _line(
+          'Headline long first line',
+          left: 60,
+          top: 60,
+          right: 900,
+          height: 44,
+        ),
+        _line('and its second', left: 60, top: 110, right: 400, height: 44),
+        _line('half here', left: 430, top: 110, right: 900, height: 44),
+      ];
+
+      final layout = OcrDocumentLayout.blocks(
+        _result([_block(headline), _block(body)]),
+      );
+
+      expect(layout, hasLength(2));
+      expect(
+        layout.first.text,
+        'Headline long first line and its second half here',
+      );
+    });
+
+    test('never joins the body columns of one row into a sentence', () {
+      // The same row, three boxes side by side — a newspaper's three columns.
+      // They are body-sized, so the display-type rule cannot fire, and they do
+      // not share a column. Reading them as one paragraph would translate three
+      // different articles as one sentence.
+      final row = <OcrLine>[
+        for (var column = 0; column < 3; column++)
+          _line(
+            'Column ${column + 1} line 1',
+            left: 60 + column * 330.0,
+            top: 100,
+            right: 60 + column * 330.0 + 300,
+          ),
+        for (var column = 0; column < 3; column++)
+          _line(
+            'Column ${column + 1} line 2',
+            left: 60 + column * 330.0,
+            top: 122,
+            right: 60 + column * 330.0 + 300,
+          ),
+      ];
+
+      final layout = OcrDocumentLayout.blocks(_result([_block(row)]));
+
+      expect(layout, hasLength(3));
+      for (var column = 0; column < 3; column++) {
+        expect(layout[column].text, contains('Column ${column + 1}'));
+        for (var other = 0; other < 3; other++) {
+          if (other == column) continue;
+          expect(
+            layout[column].text,
+            isNot(contains('Column ${other + 1}')),
+            reason: 'columns $column and $other were joined into one sentence',
+          );
+        }
+      }
     });
 
     test('reads the columns inside one block left to right, not row by row', () {
@@ -371,6 +572,107 @@ void main() {
 
       expect(layout.single.bounds, OcrRect.fromLTRB(100, 100, 600, 142));
     });
+  });
+
+  group('small print and spanning headlines', () {
+    test('reads small print in three columns', () {
+      // A notice photographed from far enough away that a line is 9 px tall and
+      // the gutters are 10 px. Every threshold in the layout is a fraction of
+      // the page's own line height, so the same geometry must produce the same
+      // order as a large page — nothing here is tuned to pixel counts.
+      const height = 9.0;
+      const pitch = 11.0;
+      final columns = <List<OcrLine>>[
+        for (var column = 0; column < 3; column++)
+          [
+            for (var index = 0; index < 30; index++)
+              _line(
+                'C${column + 1}L${index + 1}',
+                left: 20.0 + column * 110,
+                right: 120.0 + column * 110,
+                top: 100.0 + index * pitch,
+                height: height,
+              ),
+          ],
+      ];
+
+      final layout = OcrDocumentLayout.blocks(
+        // One block for the whole page, as the engine often returns for dense
+        // small print.
+        _result(
+          [
+            _block([for (final column in columns) ...column]),
+          ],
+          width: 400,
+          height: 600,
+        ),
+      );
+
+      expect(layout, hasLength(3));
+      for (var column = 0; column < 3; column++) {
+        final block = layout[column];
+        expect(block.lines, hasLength(30));
+        expect(
+          block.text,
+          startsWith('C${column + 1}L1 '),
+          reason: 'small print must still be read column by column',
+        );
+        expect(block.text, isNot(contains('C${column + 2}L')));
+      }
+    });
+
+    test(
+      'reads a headline split into two boxes left to right, above the body',
+      () {
+        // ML Kit regularly returns one printed headline as two boxes. Both are
+        // wide enough to be spanning anchors, so they must come out in order and
+        // before the three columns under them — not one of them first and the
+        // other after the body.
+        final lines = <OcrLine>[
+          _line(
+            'Relief for contract workers',
+            left: 100,
+            right: 600,
+            top: 40,
+            height: 30,
+          ),
+          _line(
+            'under the 2022 rules',
+            left: 610,
+            right: 1100,
+            top: 40,
+            height: 30,
+          ),
+          for (final column in <int>[0, 1, 2])
+            for (var index = 0; index < 4; index++)
+              _line(
+                'C${column + 1}L${index + 1}',
+                left: 100.0 + column * 340,
+                right: 400.0 + column * 340,
+                top: 120.0 + index * 26,
+              ),
+        ];
+
+        final layout = OcrDocumentLayout.blocks(
+          _result(
+            [
+              _block([lines[2]]),
+              _block([lines[1]]),
+              _block([lines[0]]),
+              _block(lines.sublist(3)),
+            ],
+            width: 1200,
+            height: 1600,
+          ),
+        );
+
+        expect(layout.first.text, 'Relief for contract workers');
+        expect(layout[1].text, 'under the 2022 rules');
+        expect(layout[2].text, startsWith('C1L1'));
+        expect(layout[3].text, startsWith('C2L1'));
+        expect(layout[4].text, startsWith('C3L1'));
+      },
+    );
   });
 
   group('tables', () {
