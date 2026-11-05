@@ -62,7 +62,7 @@ class MainActivity : FlutterActivity() {
         //   shareText      — plain text (OCR / translation results)
         //   shareFile      — a file in our cache, via a FileProvider content:// URI
         //   exportFile     — a copy the user can find later (Downloads)
-        //   cacheDirectory — the app's own cache directory, where created PDFs
+        //   cacheDirectory — the app's own storage directory, where created PDFs
         //                    are written (see NativePdfOutputDirectory on the
         //                    Dart side)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, shareChannelName)
@@ -71,10 +71,32 @@ class MainActivity : FlutterActivity() {
                     "shareText" -> result.success(shareText(call))
                     "shareFile" -> result.success(shareFile(call))
                     "exportFile" -> result.success(exportFile(call))
-                    "cacheDirectory" -> result.success(cacheDir.absolutePath)
+                    "cacheDirectory" -> result.success(sharedFilesDir().absolutePath)
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /**
+     * The directory created PDFs are written into: `<files>/shared`.
+     *
+     * It used to be `cacheDir`, which looked like the natural choice — the files
+     * are throw-away hand-offs — but it could not be shared. On this project's
+     * test device `cacheDir` resolves to `.../code_cache`, and `FileProvider` has
+     * no root that covers it: `code-cache-path` is **not** a supported tag (the
+     * recognised ones are cache-path, files-path, external-*, root-path), so
+     * minting a URI threw `Failed to find configured root`, sharing reported
+     * false, and only the Save button worked.
+     *
+     * `filesDir` is covered by the provider's `<files-path>` root on every
+     * device, so a created PDF can always be handed out. The directory is still
+     * private to the app; nothing about it is public until a grant is attached
+     * to one URI.
+     */
+    private fun sharedFilesDir(): File {
+        val directory = File(filesDir, "shared")
+        if (!directory.exists()) directory.mkdirs()
+        return directory
     }
 
     /**

@@ -15,6 +15,7 @@ import '../pdf/domain/pdf_page_draft.dart';
 import '../pdf/presentation/pdf_capture_screen.dart';
 import '../pdf/presentation/pdf_import_screen.dart';
 import '../pdf/presentation/pdf_review_screen.dart';
+import '../pdf/presentation/searchable_pdf_screen.dart';
 import 'camera_capture_screen.dart';
 import 'ocr_result_screen.dart';
 import 'widgets/app_bottom_sheet.dart';
@@ -31,6 +32,9 @@ enum HomeAction {
   /// Build a new PDF from captured or chosen pages: capture (or pick) the
   /// pages, review and reorder them, name the file, then write it.
   createPdf,
+
+  /// Give a scanned PDF a searchable text layer.
+  searchablePdf,
 }
 
 /// The three ways into the app, with the exact sheet each one shows.
@@ -94,6 +98,12 @@ enum _EntryPoint {
         icon: Icons.text_snippet_outlined,
         title: 'Extract Text',
         subtitle: 'Choose a page to recognize',
+      ),
+      SheetAction<HomeAction>(
+        value: HomeAction.searchablePdf,
+        icon: Icons.manage_search_outlined,
+        title: 'Make Searchable PDF',
+        subtitle: 'Add a text layer to a scan',
       ),
     ],
   );
@@ -265,7 +275,17 @@ class _HomeScreenState extends State<HomeScreen> {
             // Not offered by this sheet (see _EntryPoint.pdf), so nothing to do.
             break;
         }
+      case HomeAction.searchablePdf:
+        await _openSearchablePdf();
     }
+  }
+
+  /// Gives a scanned PDF a text layer. Its own screen, because the work is
+  /// long-running (one OCR pass per page) and needs its own progress.
+  Future<void> _openSearchablePdf() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const SearchablePdfScreen()),
+    );
   }
 
   Future<void> _extractText(_EntryPoint entry) async {

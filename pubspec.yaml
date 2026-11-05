@@ -119,6 +119,11 @@ flutter:
   assets:
     - assets/benchmark/
     - assets/benchmark/real/
+    # The Devanagari face embedded into searchable PDFs. A PDF can only carry
+    # Hindi text if a font with those glyphs is embedded in it; the built-in
+    # PDF base-14 fonts are Latin-only. Noto Sans Devanagari (OFL, ~215 KB) is
+    # the whole cost of searchable/copyable Hindi. See `assets/fonts/OFL.txt`.
+    - assets/fonts/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

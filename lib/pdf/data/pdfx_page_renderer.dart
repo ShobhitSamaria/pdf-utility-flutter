@@ -132,6 +132,10 @@ class PdfxPageRenderer implements PdfPageRenderer {
         imagePath: await _writePagePng(image.bytes, pageNumber),
         width: image.width ?? raster.width,
         height: image.height ?? raster.height,
+        // The page's own geometry, which the converter uses to keep every page
+        // in its original portrait or landscape shape.
+        pageWidth: page.width,
+        pageHeight: page.height,
         elapsed: stopwatch.elapsed,
       );
     } catch (error) {

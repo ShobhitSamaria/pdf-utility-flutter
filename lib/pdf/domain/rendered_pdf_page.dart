@@ -9,6 +9,8 @@ class RenderedPdfPage {
     required this.imagePath,
     required this.width,
     required this.height,
+    this.pageWidth = 0,
+    this.pageHeight = 0,
     this.elapsed,
   });
 
@@ -21,6 +23,20 @@ class RenderedPdfPage {
   /// Pixel width/height of the rasterised image.
   final int width;
   final int height;
+
+  /// The page's own size in PostScript points, as the PDF declares it.
+  ///
+  /// Carried separately from the pixel size because it is the document's real
+  /// geometry: a landscape page stays landscape when the output page is built
+  /// from these, not from a pixel count re-fitted to a portrait box.
+  final double pageWidth;
+  final double pageHeight;
+
+  /// Whether the source declared a usable page size.
+  bool get hasPageSize => pageWidth > 0 && pageHeight > 0;
+
+  /// Whether the printed page is wider than it is tall.
+  bool get isLandscape => pageWidth > pageHeight;
 
   /// How long the render took, when measured.
   final Duration? elapsed;

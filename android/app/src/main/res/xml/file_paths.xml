@@ -11,6 +11,12 @@
 <paths>
     <!-- Generated PDFs (Directory.systemTemp / the app's cache directory). -->
     <cache-path name="cache" path="." />
+    <!-- Created PDFs are written to `<files>/shared`, not to the cache, for
+         exactly this reason: `FileProvider` has no `code-cache-path` root (the
+         recognised tags are cache-path, files-path, external-*, root-path), and
+         on at least one device `getCacheDir()` resolves to `.../code_cache`, so
+         a cache-resident PDF could not be shared at all. `files-path` above
+         covers `<files>` everywhere. -->
     <!-- Files the app wrote into its own data directory. -->
     <files-path name="files" path="." />
     <!-- App-specific external storage (used on Android 9 and older, where
