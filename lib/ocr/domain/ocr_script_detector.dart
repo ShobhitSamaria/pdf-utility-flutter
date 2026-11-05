@@ -269,7 +269,8 @@ class OcrScriptDetector {
   ///    genuinely mixed page; the merge keeps the Devanagari lines that the
   ///    Latin pass mis-read and the Latin lines the Devanagari pass did not read
   ///    at all. Junk the Latin pass emitted *over* Hindi text is dropped by
-  ///    `OcrMergePolicy`, which prefers the Devanagari line for a region.
+  ///    `OcrMergePolicy`, which prefers the Devanagari line for a region and
+  ///    refuses to append non-colliding symbol soup.
   /// 2. Devanagari found, probe letterless → [AutoScriptOutcome.useSecondary].
   ///    Symbol soup carries nothing worth merging, and merging it would only add
   ///    junk lines and the "two passes" label to a single-script page.

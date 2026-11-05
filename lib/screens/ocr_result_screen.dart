@@ -14,6 +14,7 @@ import '../ocr/domain/ocr_result_index.dart';
 import '../ocr/domain/ocr_script_mode.dart';
 import '../ocr/domain/ocr_selection.dart';
 import '../ocr/presentation/ocr_failure_notice.dart';
+import '../ocr/domain/ocr_capabilities.dart';
 import '../ocr/presentation/widgets/ocr_overlay.dart';
 import '../translation/domain/translated_region.dart';
 import '../translation/domain/translation_language.dart';
@@ -887,7 +888,8 @@ class _EmptyResultNotice extends StatelessWidget {
             Text(
               'The image was read, but no words came back. That usually means '
               'the photo is blurred, tilted or dark — or the text is in a '
-              'script that was not selected.',
+              'script that was not selected. This build reads '
+              '${OcrCapabilities.bundledLabel} text from photos.',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 10),

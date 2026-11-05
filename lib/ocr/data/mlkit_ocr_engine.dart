@@ -4,6 +4,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
     as mlkit;
 
 import '../domain/ocr_block.dart';
+import '../domain/ocr_capabilities.dart';
 import '../domain/ocr_element.dart';
 import '../domain/ocr_engine.dart';
 import '../domain/ocr_exception.dart';
@@ -56,6 +57,16 @@ class MlKitOcrEngine implements OcrEngine {
       'engine: run start script=${options.script.name} '
       'file=${_fileLabel(imagePath)}',
     );
+
+    // 0. This build only contains some recognizers. Asking for one of the others
+    //    would construct a recognizer with no model behind it and surface as a
+    //    generic engine error after a delay; say what is missing instead.
+    if (!OcrCapabilities.isBundled(options.script)) {
+      throw OcrException(
+        OcrErrorKind.engineUnavailable,
+        OcrCapabilities.unavailableMessage(options.script),
+      );
+    }
 
     // 1. Preflight: fail with a precise, actionable kind *before* the native
     //    layer, so a stale path is never reported as a recognizer fault.
