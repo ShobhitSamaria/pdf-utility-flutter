@@ -1,0 +1,9 @@
+# Dependencies and Remotion cache
+node_modules/
+.remotion/
+
+# Large rendered media — regenerate with npm run render:all
+out/*.mp4
+
+# macOS
+.DS_Store
