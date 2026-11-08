@@ -1,5 +1,5 @@
 name: pdf_utility_flutter
-description: "On-device OCR, translation and PDF toolkit for Android."
+description: "OCR PDF Studio — scan, extract text, translate and build PDFs on Android."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -38,6 +38,11 @@ dependencies:
   # Pick an existing image from the gallery (Android Photo Picker under the
   # hood - no storage permission required on modern Android).
   image_picker: ^1.2.3
+  # Android implementation of image_picker, imported directly for one switch:
+  # `useAndroidPhotoPicker` (system Photo Picker instead of the legacy
+  # ACTION_GET_CONTENT document browser). Already in the dependency graph.
+  image_picker_android: ^0.8.13
+  image_picker_platform_interface: ^2.11.1
 
   # On-device Google ML Kit Text Recognition. Runs natively (no cloud, no
   # Tesseract, no Python backend) and exposes block/line/element geometry.
@@ -77,6 +82,10 @@ dependencies:
   # documents are built from the page images already on disk and the app has no
   # dependency on a platform print/publish service.
   pdf: ^3.13.1
+
+  # Re-encodes page images for the High compression option. Already in the
+  # graph via `pdf`; now used by production code, so it is a real dependency.
+  image: ^4.12.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -86,11 +95,6 @@ dev_dependencies:
   # fake the engine but cannot prove that a picked image reaches native OCR.
   integration_test:
     sdk: flutter
-
-  # Test-only JPEG encoder. Already in the dependency graph (transitively via
-  # `pdf`), declared here because the device test uses it directly to turn a
-  # rendered page into a camera-style JPEG.
-  image: ^4.12.0
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -117,6 +121,8 @@ flutter:
   # manifest ships empty and the harness reports that tier as unmeasured until
   # entries are added. See docs/OCR_BENCHMARK.md.
   assets:
+    # Logo mark shown in the Home header and the Settings identity block.
+    - assets/branding/
     - assets/benchmark/
     - assets/benchmark/real/
     # The Devanagari face embedded into searchable PDFs. A PDF can only carry

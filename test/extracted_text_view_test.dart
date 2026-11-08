@@ -94,9 +94,8 @@ void main() {
     expect(find.text('Extracted text'), findsOneWidget);
     expect(find.text('The quick brown fox'), findsOneWidget);
     expect(find.text('jumps over the lazy dog'), findsOneWidget);
-    // A summary of what was recognized, so the text has provenance.
-    expect(find.textContaining('1 blocks'), findsOneWidget);
-    expect(find.textContaining('9 words'), findsOneWidget);
+    // A plain-language summary of what was recognized.
+    expect(find.text('9 words found'), findsOneWidget);
   });
 
   testWidgets('Copy all puts the whole text on the clipboard', (tester) async {

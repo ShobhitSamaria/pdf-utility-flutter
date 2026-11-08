@@ -10,6 +10,7 @@ import '../data/pdf_file_exporter.dart';
 import '../domain/pdf_creation.dart';
 import '../domain/pdf_exception.dart';
 import '../domain/pdf_page_draft.dart';
+import '../domain/pdf_size_estimate.dart';
 import 'pdf_capture_screen.dart';
 import 'widgets/pdf_success_sheet.dart';
 
@@ -21,6 +22,14 @@ import 'widgets/pdf_success_sheet.dart';
 /// actions.
 typedef PdfCapturePages = Future<List<String>> Function(BuildContext context);
 typedef PdfPickImages = Future<List<String>> Function();
+
+/// Estimates the finished file's size. Injectable so a widget test can assert
+/// the estimate UI without decoding images in a fake-async test.
+typedef PdfSizeEstimator =
+    Future<int> Function({
+      required List<String> pageImagePaths,
+      required PdfCompression compression,
+    });
 
 /// The **review** step of PDF creation: the pages, in order, with everything the
 /// user is allowed to change before the file is written.
@@ -56,6 +65,7 @@ class PdfReviewScreen extends StatefulWidget {
     this.capturePages,
     this.pickImages,
     this.exporter,
+    this.sizeEstimator,
   });
 
   /// Pages to start from (a capture session, a gallery multi-select, or the
@@ -82,6 +92,9 @@ class PdfReviewScreen extends StatefulWidget {
   /// Hands the finished file to the rest of the device (share sheet, copy in
   /// Downloads). Injectable so a test can drive both outcomes.
   final PdfFileExporter? exporter;
+
+  /// Estimates the file before it is written. Defaults to [PdfSizeEstimate].
+  final PdfSizeEstimator? sizeEstimator;
 
   /// Convenience for the common case: a list of image paths, all from one
   /// source.
@@ -120,11 +133,25 @@ class _PdfReviewScreenState extends State<PdfReviewScreen> {
 
   /// Whether a document is being written right now.
   bool _creating = false;
+  PdfCompression _compression = PdfCompression.standard;
   int _written = 0;
   int _total = 0;
 
+  /// The size last calculated for [_draft] + [_compression], and whether a new
+  /// calculation is running. `null` means "not known yet", which the panel shows
+  /// as *Calculating…* rather than inventing a number.
+  int? _estimateBytes;
+  bool _estimating = false;
+  int _estimateRequest = 0;
+
   PdfCreationService get _writer =>
       widget.creationService ?? createPdfCreationService();
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refreshEstimate());
+  }
 
   @override
   void dispose() {
@@ -135,6 +162,46 @@ class _PdfReviewScreenState extends State<PdfReviewScreen> {
   void _replace(PdfDraft next) {
     if (next == _draft) return;
     setState(() => _draft = next);
+    unawaited(_refreshEstimate());
+  }
+
+  /// Recalculates in the background whenever the pages or mode change.
+  ///
+  /// The request token makes an older, slower calculation unable to overwrite a
+  /// newer one. Nothing is recomputed from `build`, so scrolling and every other
+  /// rebuild reuse the cached value.
+  Future<void> _refreshEstimate() async {
+    final paths = _draft.pageImagePaths;
+    final compression = _compression;
+    final request = ++_estimateRequest;
+
+    if (paths.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _estimateBytes = null;
+          _estimating = false;
+        });
+      }
+      return;
+    }
+
+    setState(() => _estimating = true);
+    int bytes;
+    try {
+      bytes = await (widget.sizeEstimator ?? PdfSizeEstimate.bytes)(
+        pageImagePaths: paths,
+        compression: compression,
+      );
+    } catch (_) {
+      // The estimate is a courtesy, never a blocker: creation still reports a
+      // real failure with a real message.
+      bytes = 0;
+    }
+    if (!mounted || request != _estimateRequest) return;
+    setState(() {
+      _estimateBytes = bytes;
+      _estimating = false;
+    });
   }
 
   // --- editing ---------------------------------------------------------------
@@ -192,6 +259,7 @@ class _PdfReviewScreenState extends State<PdfReviewScreen> {
       created = await _writer.create(
         pageImagePaths: _draft.pageImagePaths,
         fileName: _draft.resolvedFileName,
+        compression: _compression,
         onProgress: (completed, total) {
           if (!mounted) return;
           setState(() {
@@ -248,6 +316,37 @@ class _PdfReviewScreenState extends State<PdfReviewScreen> {
     setState(() => _creating = false);
   }
 
+  /// Leaving with pages on screen asks first.
+  ///
+  /// This screen owns pages the user captured or chose, and a system Back used
+  /// to discard them silently — while the camera's own Back asked "Discard
+  /// these pages?". Same decision, same guard.
+  Future<void> _confirmDiscard() async {
+    final pageCount = _draft.pageCount;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Discard these pages?'),
+        content: Text(
+          pageCount == 1
+              ? 'The page you added will not be saved.'
+              : 'The $pageCount pages you added will not be saved.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Keep editing'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    if (discard == true && mounted) Navigator.of(context).pop();
+  }
+
   // --- view ------------------------------------------------------------------
 
   @override
@@ -255,53 +354,69 @@ class _PdfReviewScreenState extends State<PdfReviewScreen> {
     final theme = Theme.of(context);
     final pageCount = _draft.pageCount;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Review pages'),
-        actions: [
-          if (pageCount > 0)
-            Padding(
-              padding: const EdgeInsets.only(right: AppSpacing.md),
-              child: Center(
-                child: Text(
-                  pageCount == 1 ? '1 page' : '$pageCount pages',
-                  style: theme.textTheme.labelMedium,
+    return PopScope(
+      // A write in progress must not be interrupted, and pages on screen must
+      // not vanish on a stray Back.
+      canPop: pageCount == 0 && !_creating,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop || _creating) return;
+        unawaited(_confirmDiscard());
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Review pages'),
+          actions: [
+            if (pageCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(right: AppSpacing.md),
+                child: Center(
+                  child: Text(
+                    pageCount == 1 ? '1 page' : '$pageCount pages',
+                    style: theme.textTheme.labelMedium,
+                  ),
                 ),
               ),
+          ],
+        ),
+        body: Stack(
+          children: [
+            Column(
+              children: [
+                Expanded(
+                  child: pageCount == 0
+                      ? _EmptyDraft(
+                          onCamera: () => unawaited(_addFromCamera()),
+                          onGallery: () => unawaited(_addFromGallery()),
+                        )
+                      : _PageGrid(
+                          draft: _draft,
+                          onDelete: _delete,
+                          onDragTo: _dragTo,
+                          onAddCamera: () => unawaited(_addFromCamera()),
+                          onAddGallery: () => unawaited(_addFromGallery()),
+                        ),
+                ),
+                _CreatePanel(
+                  controller: _fileName,
+                  resolvedName: _draft.resolvedFileName,
+                  hasFileName: _draft.hasFileName,
+                  pageCount: pageCount,
+                  creating: _creating,
+                  estimateBytes: _estimateBytes,
+                  estimating: _estimating,
+                  compression: _compression,
+                  onCompressionChanged: (value) {
+                    setState(() => _compression = value);
+                    unawaited(_refreshEstimate());
+                  },
+                  onChanged: (value) => _replace(_draft.withFileName(value)),
+                  onCreate: () => unawaited(_create()),
+                ),
+              ],
             ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          Column(
-            children: [
-              Expanded(
-                child: pageCount == 0
-                    ? _EmptyDraft(
-                        onCamera: () => unawaited(_addFromCamera()),
-                        onGallery: () => unawaited(_addFromGallery()),
-                      )
-                    : _PageGrid(
-                        draft: _draft,
-                        onDelete: _delete,
-                        onDragTo: _dragTo,
-                        onAddCamera: () => unawaited(_addFromCamera()),
-                        onAddGallery: () => unawaited(_addFromGallery()),
-                      ),
-              ),
-              _CreatePanel(
-                controller: _fileName,
-                resolvedName: _draft.resolvedFileName,
-                hasFileName: _draft.hasFileName,
-                pageCount: pageCount,
-                creating: _creating,
-                onChanged: (value) => _replace(_draft.withFileName(value)),
-                onCreate: () => unawaited(_create()),
-              ),
-            ],
-          ),
-          if (_creating) _CreationOverlay(written: _written, total: _total),
-        ],
+            if (_creating) _CreationOverlay(written: _written, total: _total),
+          ],
+        ),
       ),
     );
   }
@@ -371,11 +486,11 @@ class _EmptyDraft extends StatelessWidget {
   }
 }
 
-/// The pages as a grid of numbered thumbnails.
+/// The pages as a full-width, scrollable list of numbered previews.
 ///
 /// Reordering is drag-and-drop: press a page, drop it on the page it should
 /// take the place of. That is a deliberate choice over up/down arrows — the
-/// order of a document is spatial, and the grid is where the user can see it.
+/// order of a document is spatial, and the list is where the user can see it.
 class _PageGrid extends StatelessWidget {
   const _PageGrid({
     required this.draft,
@@ -391,82 +506,83 @@ class _PageGrid extends StatelessWidget {
   final VoidCallback onAddCamera;
   final VoidCallback onAddGallery;
 
-  /// Longest edge of a decoded thumbnail, in physical pixels.
+  /// Longest edge of a decoded preview, in physical pixels.
   ///
-  /// A phone photo is a 12-megapixel file; decoding one per tile at full size is
-  /// how a review screen runs a phone out of memory. The thumbnail is drawn at
-  /// well under this, so the pixels above it were never going to be seen.
-  static const int _thumbnailDecodeWidth = 320;
+  /// A full-width page needs a little more detail than the old grid thumbnail
+  /// did, while staying well below a phone photo's native size.
+  static const int _previewDecodeWidth = 900;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // Fixed three columns on a phone, more on a tablet-width screen: the
-        // tiles stay finger-sized rather than stretching.
-        final columns = (constraints.maxWidth / 150).floor().clamp(2, 5);
-        const spacing = AppSpacing.md;
-        final tileWidth =
-            (constraints.maxWidth - spacing * (columns - 1)) / columns;
+    final theme = Theme.of(context);
 
-        return SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.lg,
-            AppSpacing.lg,
-            AppSpacing.lg,
-            AppSpacing.lg,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Pages', style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: 2),
-              Text(
-                'Press and drag a page to change the order.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: AppSpacing.md),
-              Wrap(
-                spacing: spacing,
-                runSpacing: spacing,
-                children: [
-                  for (var index = 0; index < draft.pages.length; index++)
-                    SizedBox(
-                      width: tileWidth,
-                      child: _DraggablePageTile(
-                        page: draft.pages[index],
-                        index: index,
-                        decodeWidth: _thumbnailDecodeWidth,
-                        onDelete: () => onDelete(index),
-                        onDragTo: onDragTo,
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: AppSpacing.xl),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: onAddCamera,
-                      icon: const Icon(Icons.add_a_photo_outlined, size: 18),
-                      label: const Text('Add pages'),
-                    ),
+    // A single full-width column, not a grid. A page is a document: the review
+    // step exists to check that the scan is legible and in the right order, and
+    // half a phone's width is not enough to do that. A lazy list also keeps a
+    // long document smooth, since only visible pages are built and decoded.
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.lg,
+        AppSpacing.lg,
+        AppSpacing.lg,
+      ),
+      itemCount: draft.pages.length + 2,
+      itemBuilder: (context, slot) {
+        if (slot == 0) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: AppSpacing.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Pages', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 2),
+                Text(
+                  'Press and hold a page to reorder.',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          );
+        }
+
+        if (slot == draft.pages.length + 1) {
+          return Padding(
+            padding: const EdgeInsets.only(top: AppSpacing.md),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onAddCamera,
+                    icon: const Icon(Icons.add_a_photo_outlined, size: 18),
+                    label: const Text('Take photos'),
                   ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: onAddGallery,
-                      icon: const Icon(
-                        Icons.add_photo_alternate_outlined,
-                        size: 18,
-                      ),
-                      label: const Text('Add images'),
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onAddGallery,
+                    icon: const Icon(
+                      Icons.add_photo_alternate_outlined,
+                      size: 18,
                     ),
+                    label: const Text('Choose images'),
                   ),
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
+          );
+        }
+
+        final index = slot - 1;
+        return Padding(
+          padding: const EdgeInsets.only(bottom: AppSpacing.md),
+          child: _DraggablePageTile(
+            page: draft.pages[index],
+            index: index,
+            decodeWidth: _previewDecodeWidth,
+            onDelete: () => onDelete(index),
+            onDragTo: onDragTo,
           ),
         );
       },
@@ -547,7 +663,12 @@ class _DraggablePageTile extends StatelessWidget {
 }
 
 /// The visual tile: image, page number, source, delete button.
-class _PageTile extends StatelessWidget {
+///
+/// The frame follows the page's own proportions. A portrait scan fills a tall
+/// tile and a landscape scan fills a wide one, so the document uses the space
+/// instead of sitting in a portrait frame padded with empty bands. Images are
+/// still contained, never stretched or cropped.
+class _PageTile extends StatefulWidget {
   const _PageTile({
     required this.page,
     required this.index,
@@ -566,17 +687,90 @@ class _PageTile extends StatelessWidget {
   final bool dragHandleOnly;
 
   @override
+  State<_PageTile> createState() => _PageTileState();
+}
+
+class _PageTileState extends State<_PageTile> {
+  /// Page frame until the real image size is known. A4 portrait: the most
+  /// common page shape, and a neutral one while the image decodes.
+  static const double _fallbackAspectRatio = 0.707;
+
+  ImageProvider? _provider;
+  ImageStream? _stream;
+  ImageStreamListener? _listener;
+  double? _aspectRatio;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolvePage();
+  }
+
+  @override
+  void didUpdateWidget(_PageTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.page.imagePath != widget.page.imagePath ||
+        oldWidget.decodeWidth != widget.decodeWidth) {
+      _aspectRatio = null;
+      _resolvePage();
+    }
+  }
+
+  @override
+  void dispose() {
+    _detach();
+    super.dispose();
+  }
+
+  void _detach() {
+    final stream = _stream;
+    final listener = _listener;
+    if (stream != null && listener != null) {
+      stream.removeListener(listener);
+    }
+    _stream = null;
+    _listener = null;
+  }
+
+  void _resolvePage() {
+    _detach();
+    // Decode at thumbnail size: a 12-megapixel photo is not needed just to
+    // learn its proportions, and the same provider feeds the visible image.
+    final provider = ResizeImage(
+      FileImage(File(widget.page.imagePath)),
+      width: widget.decodeWidth,
+    );
+    _provider = provider;
+    final stream = provider.resolve(const ImageConfiguration());
+    final listener = ImageStreamListener(
+      (info, synchronousCall) {
+        if (!mounted) return;
+        final aspect = (info.image.width / info.image.height).clamp(0.2, 3.0);
+        if (_aspectRatio == null || (_aspectRatio! - aspect).abs() > 0.01) {
+          setState(() => _aspectRatio = aspect);
+        }
+      },
+      onError: (error, stack) {
+        // A missing file keeps the neutral portrait frame and the image's own
+        // errorBuilder shows the broken-image placeholder.
+      },
+    );
+    _stream = stream;
+    _listener = listener;
+    stream.addListener(listener);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final provider = _provider;
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
         AspectRatio(
-          // Portrait, like the pages themselves. `cover` is right here: this is
-          // a preview of which page it is, not of the page's exact shape.
-          aspectRatio: 0.74,
+          aspectRatio: _aspectRatio ?? _fallbackAspectRatio,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(AppRadii.card),
             child: DecoratedBox(
@@ -588,38 +782,38 @@ class _PageTile extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  Image.file(
-                    File(page.imagePath),
-                    fit: BoxFit.cover,
-                    cacheWidth: decodeWidth,
-                    // A page whose file has gone (a cleared camera cache) shows
-                    // a broken-image placeholder rather than crashing the grid.
-                    errorBuilder: (context, error, stack) => const Center(
-                      child: Icon(
-                        Icons.broken_image_outlined,
-                        color: AppColors.muted,
+                  if (provider != null)
+                    Image(
+                      image: provider,
+                      fit: BoxFit.contain,
+                      // A page whose file has gone (a cleared camera cache)
+                      // shows a broken-image placeholder rather than crashing
+                      // the list.
+                      errorBuilder: (context, error, stack) => const Center(
+                        child: Icon(
+                          Icons.broken_image_outlined,
+                          color: AppColors.muted,
+                        ),
                       ),
                     ),
-                  ),
-                  if (onDelete != null && !dragHandleOnly)
+                  // On the page itself, not under it: a full-width page is
+                  // taller than the list viewport, so a footer control would
+                  // sit below the fold. The scrim keeps it visible over any
+                  // document.
+                  if (widget.onDelete != null && !widget.dragHandleOnly)
                     Positioned(
-                      top: 2,
-                      right: 2,
+                      top: 4,
+                      right: 4,
                       child: Material(
-                        color: Colors.black.withValues(alpha: 0.55),
+                        color: Colors.black.withValues(alpha: 0.5),
                         shape: const CircleBorder(),
-                        child: InkWell(
-                          customBorder: const CircleBorder(),
-                          onTap: onDelete,
-                          child: const Padding(
-                            padding: EdgeInsets.all(5),
-                            child: Icon(
-                              Icons.close,
-                              size: 15,
-                              color: Colors.white,
-                              semanticLabel: 'Delete page',
-                            ),
-                          ),
+                        clipBehavior: Clip.antiAlias,
+                        child: IconButton(
+                          tooltip: 'Delete page',
+                          onPressed: widget.onDelete,
+                          icon: const Icon(Icons.close, size: 20),
+                          color: Colors.white,
+                          visualDensity: VisualDensity.compact,
                         ),
                       ),
                     ),
@@ -628,21 +822,34 @@ class _PageTile extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            Text('Page ${index + 1}', style: theme.textTheme.labelMedium),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                page.originLabel,
-                style: theme.textTheme.labelSmall,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+        const SizedBox(height: 4),
+        if (widget.dragHandleOnly)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(6),
+              child: Icon(Icons.drag_indicator, size: 20),
             ),
-          ],
-        ),
+          )
+        else
+          Row(
+            children: [
+              Text(
+                'Page ${widget.index + 1}',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  widget.page.originLabel,
+                  style: theme.textTheme.labelSmall,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
       ],
     );
   }
@@ -652,8 +859,10 @@ class _PageTile extends StatelessWidget {
 ///
 /// The name field is the one thing this panel has to get exactly right, because
 /// the file is named from it. It therefore:
-/// * starts **empty** with an `Enter file name` hint — no pre-filled
-///   `document.pdf` that could be saved by accident;
+/// * carries a `PDF file name` label above an empty field with an
+///   `e.g. My Document` hint — no pre-filled `document.pdf` that could be saved
+///   by accident;
+/// * shows `.pdf` as a suffix, hidden once the typed name already ends in it;
 /// * uses explicit dark ink on a light fill rather than relying on the ambient
 ///   theme, so it stays readable on Android whatever the platform's text colour
 ///   resolution does;
@@ -667,6 +876,10 @@ class _CreatePanel extends StatelessWidget {
     required this.hasFileName,
     required this.pageCount,
     required this.creating,
+    required this.estimateBytes,
+    required this.estimating,
+    required this.compression,
+    required this.onCompressionChanged,
     required this.onChanged,
     required this.onCreate,
   });
@@ -681,6 +894,16 @@ class _CreatePanel extends StatelessWidget {
 
   final int pageCount;
   final bool creating;
+
+  /// Exact bytes the writer is expected to produce, or `null` while the first
+  /// calculation is still running.
+  final int? estimateBytes;
+
+  /// Whether a calculation is in flight. A previous value stays visible while
+  /// a new one is computed, so the label never flickers back to nothing.
+  final bool estimating;
+  final PdfCompression compression;
+  final ValueChanged<PdfCompression> onCompressionChanged;
   final ValueChanged<String> onChanged;
   final VoidCallback onCreate;
 
@@ -712,6 +935,24 @@ class _CreatePanel extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              Row(
+                children: [
+                  Text(
+                    'PDF file name',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (estimating)
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 1.6),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 6),
               TextField(
                 controller: controller,
                 onChanged: onChanged,
@@ -727,26 +968,28 @@ class _CreatePanel extends StatelessWidget {
                 ),
                 decoration: InputDecoration(
                   isDense: true,
-                  labelText: 'File name',
-                  hintText: 'Enter file name',
-                  labelStyle: const TextStyle(
-                    color: AppColors.ink,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  floatingLabelStyle: const TextStyle(
-                    color: AppColors.primary,
+                  hintText: 'e.g. My Document',
+                  // The suffix makes the output format obvious without ever
+                  // entering the field's value: a typed `report.pdf` is shown
+                  // as-is, not doubled.
+                  suffixText: controller.text.trim().toLowerCase().endsWith(
+                        '.pdf',
+                      )
+                      ? null
+                      : '.pdf',
+                  suffixStyle: theme.textTheme.bodyLarge?.copyWith(
+                    color: AppColors.muted,
                     fontWeight: FontWeight.w600,
                   ),
                   hintStyle: const TextStyle(color: AppColors.muted),
-                  prefixIcon: const Icon(
-                    Icons.description_outlined,
-                    size: 20,
-                    color: AppColors.primary,
-                  ),
                   filled: true,
                   // A light fill, so the field reads as a field against the
                   // white panel instead of disappearing into it.
                   fillColor: AppColors.rowTint,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.md,
+                    vertical: 14,
+                  ),
                   enabledBorder: _border(AppColors.hairline),
                   disabledBorder: _border(AppColors.hairline),
                   focusedBorder: _border(AppColors.primary, width: 2),
@@ -772,6 +1015,80 @@ class _CreatePanel extends StatelessWidget {
                     color: AppColors.muted,
                   ),
                 ),
+              if (pageCount > 0) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Estimated PDF size',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: AppColors.muted,
+                            ),
+                          ),
+                          Text(
+                            estimateBytes == null || estimateBytes == 0
+                                ? 'Calculating…'
+                                : '~${PdfSizeEstimate.format(estimateBytes!)}',
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: AppColors.ink,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    SegmentedButton<PdfCompression>(
+                      segments: const [
+                        ButtonSegment(
+                          value: PdfCompression.standard,
+                          label: Text('Standard'),
+                        ),
+                        ButtonSegment(
+                          value: PdfCompression.compress,
+                          label: Text('Compress'),
+                        ),
+                      ],
+                      selected: {compression},
+                      onSelectionChanged: creating
+                          ? null
+                          : (selection) =>
+                                onCompressionChanged(selection.first),
+                      showSelectedIcon: false,
+                      style: ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                        textStyle: WidgetStatePropertyAll(
+                          theme.textTheme.labelMedium,
+                        ),
+                        side: const WidgetStatePropertyAll(
+                          BorderSide(color: AppColors.hairline),
+                        ),
+                        foregroundColor: WidgetStateProperty.resolveWith(
+                          (states) => states.contains(WidgetState.selected)
+                              ? AppColors.primary
+                              : AppColors.ink,
+                        ),
+                        backgroundColor: WidgetStateProperty.resolveWith(
+                          (states) => states.contains(WidgetState.selected)
+                              ? AppColors.tile
+                              : AppColors.surface,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  compression.explanation,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: AppColors.muted,
+                  ),
+                ),
+              ],
               const SizedBox(height: AppSpacing.md),
               FilledButton.icon(
                 onPressed: canCreate ? onCreate : null,

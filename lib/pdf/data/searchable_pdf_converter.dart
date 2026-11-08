@@ -11,6 +11,7 @@ import 'package:flutter/services.dart' show ByteData, rootBundle;
 import 'package:pdf/pdf.dart' hide PdfException;
 import 'package:pdf/widgets.dart' as pw;
 
+import '../../app/app_brand.dart';
 import '../../ocr/domain/document_orientation.dart';
 import '../../ocr/domain/ocr_line.dart';
 import '../../ocr/domain/ocr_orientation_transform.dart';
@@ -124,7 +125,7 @@ class SearchablePdfConverter {
 
     final latin = pw.Font.helvetica();
     final devanagari = pw.Font.ttf(await _loadAsset(devanagariFontAsset));
-    final document = pw.Document(title: name, creator: 'PDF Utility');
+    final document = pw.Document(title: name, creator: AppBrand.name);
 
     final rasters = <String>[];
     try {

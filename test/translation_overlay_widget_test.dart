@@ -103,8 +103,20 @@ void main() {
   Finder boxFinder(int id) =>
       find.byKey(ValueKey<String>('translated-region-$id'));
 
-  Finder blockFinder(int id) =>
-      find.byKey(ValueKey<String>('translated-block-$id'));
+  /// Everything painted inside the overlay's stack, so a test can prove that
+  /// nothing — card, veil or scrim — is drawn behind the translated text.
+  Finder filledSurfaces() => find.descendant(
+    of: find.byType(TranslationOverlay),
+    matching: find.byWidgetPredicate(
+      (widget) =>
+          (widget is DecoratedBox &&
+              widget.decoration is BoxDecoration &&
+              (widget.decoration as BoxDecoration).color != null) ||
+          widget is ColoredBox ||
+          widget is Card ||
+          widget is Material,
+    ),
+  );
 
   testWidgets('draws each region at the position its OCR box maps to', (
     tester,
@@ -334,9 +346,7 @@ void main() {
     expect(tapped, [8, 3]);
   });
 
-  testWidgets('the backing is a tinted, rounded veil rather than a white block', (
-    tester,
-  ) async {
+  testWidgets('a translucent backing masks the source print', (tester) async {
     await tester.pumpWidget(
       harness(
         overlayOf([
@@ -350,61 +360,31 @@ void main() {
     );
     await tester.pump();
 
-    // The backing belongs to the block.
-    expect(blockFinder(0), findsOneWidget);
-
-    // Subtle rounded corners, as specified.
-    expect(TranslatedBlockPill.radius, 3);
-    expect(
-      tester
-          .widget<ClipRRect>(
-            find.descendant(
-              of: blockFinder(0),
-              matching: find.byType(ClipRRect),
-            ),
-          )
-          .borderRadius,
-      BorderRadius.circular(TranslatedBlockPill.radius),
+    // The original print sits directly under the translation, so every drawn
+    // line gets its own paper-toned backing. It has to hide the source text
+    // without becoming an opaque card that erases the page's texture.
+    final backing = tester.widget<DecoratedBox>(
+      find.descendant(of: boxFinder(0), matching: find.byType(DecoratedBox)),
     );
+    final decoration = backing.decoration as BoxDecoration;
+    expect(decoration.color, isNotNull);
+    final alpha = decoration.color!.a;
+    expect(alpha, greaterThanOrEqualTo(0.86));
+    expect(alpha, lessThan(1.0), reason: 'fully opaque would erase the photo');
 
-    final decorations = tester
-        .widgetList<DecoratedBox>(
-          find.descendant(
-            of: blockFinder(0),
-            matching: find.byType(DecoratedBox),
-          ),
-        )
-        .toList();
-    expect(decorations.length, 2);
-
-    // Outer: the shadow lifts the box off the photo. It has to live outside the
-    // clip, or ClipRRect would clip the blur away and leave it looking pasted.
-    expect(
-      (decorations.first.decoration as BoxDecoration).boxShadow,
-      isNotEmpty,
+    // Dark ink on that light surface: readable without a halo.
+    final text = tester.widget<Text>(
+      find.descendant(of: boxFinder(0), matching: find.byType(Text)),
     );
-
-    // Inner: the veil that masks the words it replaces — translucent, and tinted
-    // rather than paper-white, which is what made the old boxes glare.
-    final veil = decorations.last.decoration as BoxDecoration;
-    final color = veil.color!;
-    // Still dense enough to mask the source words beneath it; the exact value is
-    // asserted against the shared constant, so a future change has one home.
-    expect(color.a, greaterThanOrEqualTo(0.9));
-    expect(color.a, TranslatedBlockPill.backingAlpha);
-    expect(color.a, lessThan(1.0));
-    expect(color, isNot(const Color(0xFFFFFFFF)));
-
-    // "Poor contrast" was the other half of the complaint, so it is measured
-    // rather than eyeballed: the resolved text colour against the veil as it
-    // actually appears, composited over a white page — the case where a light
-    // backing has the least separation from dark text.
-    final scheme = Theme.of(tester.element(boxFinder(0))).colorScheme;
-    final asPainted = Color.alphaBlend(color, const Color(0xFFFFFFFF));
-    expect(_contrast(scheme.onSurface, asPainted), greaterThanOrEqualTo(4.5));
+    expect(text.style?.shadows, isNull);
+    expect(
+      _contrast(text.style!.color!, decoration.color!),
+      greaterThanOrEqualTo(4.5),
+      reason: 'the translation must be readable on its own backing',
+    );
   });
 
-  testWidgets('a paragraph shares one backing instead of one per line', (
+  testWidgets('a paragraph flows its lines, each with its own backing', (
     tester,
   ) async {
     // Three lines of one paragraph: their boxes touch, in image space too.
@@ -422,9 +402,10 @@ void main() {
     );
     await tester.pump();
 
-    // One pill behind all three lines — a paragraph, not three cards.
-    expect(find.byType(TranslatedBlockPill), findsOneWidget);
-    expect(blockFinder(0), findsOneWidget);
+    // A paragraph is one logical unit of text, but each of its lines keeps its
+    // own backing — the mask stops at the line, so the spaces between lines
+    // still show the photo.
+    expect(filledSurfaces(), findsNWidgets(3));
 
     // Each line is still its own slot, so it stays individually tappable.
     for (var i = 0; i < 3; i++) {
@@ -442,37 +423,51 @@ void main() {
     for (var i = 1; i < rects.length; i++) {
       expect(rects[i].top, greaterThanOrEqualTo(rects[i - 1].bottom));
     }
-
-    // The pill wraps exactly the flowed lines.
-    final pill = tester.getRect(blockFinder(0));
-    expect(pill.top, closeTo(rects.first.top, 0.01));
-    expect(pill.bottom, closeTo(rects.last.bottom, 0.01));
   });
 
-  testWidgets('the backing never absorbs a tap meant for the photo', (
-    tester,
-  ) async {
-    // A tap on the pill *between* two lines must reach the OCR layer, or word
-    // selection underneath would break whenever translation is on.
-    await tester.pumpWidget(
-      harness(
-        overlayOf([
-          for (var i = 0; i < 2; i++)
-            region(
-              id: i,
-              translated: 'नमस्ते',
-              bounds: OcrRect.fromLTRB(100, 100 + i * 60, 400, 160 + i * 60),
-            ),
-        ]),
-      ),
-    );
-    await tester.pump();
+  testWidgets(
+    'the transparent overlay never absorbs a tap meant for the photo',
+    (tester) async {
+      // Each backing covers only its own translated box, so a tap in the gap
+      // between two translated lines must reach the OCR layer underneath — word
+      // selection has to keep working while translation is on.
+      final tapped = <int>[];
+      await tester.pumpWidget(
+        harness(
+          overlayOf([
+            for (var i = 0; i < 2; i++)
+              region(
+                id: i,
+                translated: 'नमस्ते',
+                bounds: OcrRect.fromLTRB(100, 100 + i * 60, 400, 160 + i * 60),
+              ),
+          ]),
+          onRegionTap: (region) => tapped.add(region.id),
+        ),
+      );
+      await tester.pump();
 
-    expect(
-      find.descendant(of: blockFinder(0), matching: find.byType(IgnorePointer)),
-      findsOneWidget,
-    );
-  });
+      final gap =
+          (tester.getRect(boxFinder(0)).bottom +
+              tester.getRect(boxFinder(1)).top) /
+          2;
+      await tester.tapAt(Offset(tester.getRect(boxFinder(0)).center.dx, gap));
+      await tester.pump();
+      expect(
+        tapped,
+        isEmpty,
+        reason: 'the gap belongs to the photo, not a card',
+      );
+
+      // Every drawn slot is exactly its own text rectangle: nothing is inflated
+      // to cover more of the page than the line it replaces.
+      expect(
+        filledSurfaces(),
+        findsNWidgets(2),
+        reason: 'one backing per line, none across the gap',
+      );
+    },
+  );
 
   testWidgets('a long translation stays inside the image', (tester) async {
     await tester.pumpWidget(

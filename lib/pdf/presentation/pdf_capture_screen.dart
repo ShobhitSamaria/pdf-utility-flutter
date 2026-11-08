@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../../app/app_brand.dart';
 import '../../app/app_theme.dart';
 
 /// Why the camera is not usable, in terms the user can act on.
@@ -291,6 +293,13 @@ class _PdfCaptureScreenState extends State<PdfCaptureScreen>
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         elevation: 0,
+        // The app-wide AppBar theme sets a dark title colour. On this black
+        // camera chrome it has to be white, or the title reads as blue-on-black
+        // and disappears into the preview beside it.
+        titleTextStyle: Theme.of(
+          context,
+        ).textTheme.titleMedium?.copyWith(color: Colors.white),
+        systemOverlayStyle: SystemUiOverlayStyle.light,
         leading: IconButton(
           tooltip: 'Close',
           onPressed: () => unawaited(_close()),
@@ -627,7 +636,7 @@ class _CameraProblem extends StatelessWidget {
             const SizedBox(height: AppSpacing.sm),
             Text(
               permissionDenied
-                  ? 'Allow camera access for PDF Utility in Android Settings, then '
+                  ? 'Allow camera access for ${AppBrand.name} in Android Settings, then '
                         'try again. You can also add pages from your gallery instead.'
                   : (detail == null
                         ? 'This device reported no usable camera.'

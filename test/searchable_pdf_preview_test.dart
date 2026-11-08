@@ -141,7 +141,7 @@ void main() {
 
     // One primary action, and it says exactly what it does.
     expect(
-      find.widgetWithText(FilledButton, 'Make Searchable PDF'),
+      find.widgetWithText(FilledButton, 'Make PDF Searchable'),
       findsOneWidget,
     );
   });
@@ -177,13 +177,13 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(
-        find.widgetWithText(FilledButton, 'Make Searchable PDF'),
+        find.widgetWithText(FilledButton, 'Make PDF Searchable'),
       );
       await tester.pump();
 
       // The strip is now the progress readout, not a button to press again.
       expect(
-        find.widgetWithText(FilledButton, 'Make Searchable PDF'),
+        find.widgetWithText(FilledButton, 'Make PDF Searchable'),
         findsNothing,
       );
       expect(find.text('Processing page 1 of 9'), findsOneWidget);
@@ -248,11 +248,11 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Make Searchable PDF'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Make PDF Searchable'));
     await tester.pumpAndSettle();
 
     // Completion state: what was made, how big it is, and the two ways out.
-    expect(find.text('Searchable PDF ready'), findsOneWidget);
+    expect(find.text('Your PDF is searchable'), findsOneWidget);
     expect(find.text('Newspaper Scan (searchable).pdf'), findsOneWidget);
     expect(find.textContaining('9 pages'), findsWidgets);
     expect(find.textContaining('4 KB'), findsOneWidget);
@@ -293,13 +293,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Make Searchable PDF'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Make PDF Searchable'));
     await tester.pumpAndSettle();
 
     expect(find.text('That file is no longer available.'), findsOneWidget);
     // The button is back, so a transient failure can simply be retried.
     expect(
-      find.widgetWithText(FilledButton, 'Make Searchable PDF'),
+      find.widgetWithText(FilledButton, 'Make PDF Searchable'),
       findsOneWidget,
     );
   });
@@ -345,5 +345,41 @@ void main() {
 
     expect(find.text('should not open'), findsNothing);
     expect(find.text('Choose a PDF to make searchable'), findsOneWidget);
+  });
+
+  testWidgets('autoConvert starts the conversion without another tap', (
+    tester,
+  ) async {
+    var runs = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SearchablePdfPreviewScreen(
+          path: pdf.path,
+          autoConvert: true,
+          onConverted: (_, _) {},
+          convert: ({required inputPath, onProgress}) async {
+            runs++;
+            return CreatedPdf(
+              path: pdf.path,
+              fileName: 'out.pdf',
+              pageCount: 1,
+              byteSize: 1024,
+            );
+          },
+          surface: (context, {required onLoaded, required onPageChanged}) =>
+              fakeSurface(
+                context,
+                onLoaded: onLoaded,
+                onPageChanged: onPageChanged,
+              ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(runs, 1, reason: 'choosing the PDF is the only decision');
+    expect(find.text('Your PDF is searchable'), findsOneWidget);
   });
 }

@@ -241,6 +241,7 @@ class LocalMlKitTranslationService implements TranslationService {
               translatedText: TranslationText.normalize(unit.text),
               bounds: unit.bounds,
               kind: unit.kind,
+              sourceLines: unit.sourceLines,
             ),
         ],
         sourceLanguage: resolved,
@@ -299,6 +300,7 @@ class LocalMlKitTranslationService implements TranslationService {
             translatedText: text,
             bounds: unit.bounds,
             kind: unit.kind,
+            sourceLines: unit.sourceLines,
           ),
         );
         _emitProgress(
@@ -319,6 +321,7 @@ class LocalMlKitTranslationService implements TranslationService {
           translatedText: translatedText,
           bounds: unit.bounds,
           kind: unit.kind,
+          sourceLines: unit.sourceLines,
         ),
       );
       _prepared

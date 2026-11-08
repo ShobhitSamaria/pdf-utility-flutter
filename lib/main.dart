@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import 'app/app_brand.dart';
 import 'app/app_scope.dart';
 import 'app/app_theme.dart';
 import 'ocr/data/bounded_ocr_service.dart';
@@ -44,6 +46,17 @@ OcrService createOcrService() => OrientationAwareOcrService(
 TranslationService createTranslationService() => LocalMlKitTranslationService();
 
 void main() {
+  // The app is light-only, so the system bars must be too: dark status icons on
+  // the page colour and no black navigation strip under the light surface.
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark,
+      statusBarBrightness: Brightness.light,
+      systemNavigationBarColor: AppColors.surface,
+      systemNavigationBarIconBrightness: Brightness.dark,
+    ),
+  );
   runApp(
     PdfUtilityApp(
       ocrService: createOcrService(),
@@ -102,7 +115,7 @@ class _PdfUtilityAppState extends State<PdfUtilityApp> {
       // was invisible unless you happened to know the define. The service is
       // always wired here and the UI always offers it.
       child: MaterialApp(
-        title: 'PDF Utility',
+        title: AppBrand.name,
         debugShowCheckedModeBanner: false,
         // One place defines the app's visual language: see `app_theme.dart`
         // for the tokens read off the approved Figma design.

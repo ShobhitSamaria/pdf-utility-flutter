@@ -350,18 +350,75 @@ size, line cap and padding are decided, and `TranslatedOverlayDeck` passes it th
 resolved span and a height budget. The rendered `Text` uses exactly that style,
 line cap and ellipsis, so what was measured is what is painted.
 
+### Font size follows the printed line, not the block — `sourceLines`
+
+A translated line is set at the size of the line it replaces, which is what makes
+Lens's output sit so neatly in a document. The deck could not do that at first,
+because a *paragraph* region's height says nothing about its type size: a
+newspaper column's box is 200 px tall because it holds twelve lines, while a
+shipping label's box is 12 px tall because it holds one. The page therefore used
+a single flat ceiling (body size) for every paragraph.
+
+That is right for a newspaper and wrong for a form. On a real label every field
+became a one-line "paragraph", so a 9-px row was set in 17-px Devanagari and the
+glyphs spilled over the three fields below it — the large overlapping Hindi blocks
+in the reported screenshot.
+
+The fix is to carry the line count (`TranslationUnit.sourceLines` →
+`TranslatedRegion.sourceLines` → `TranslatedDeckItem.sourceLines`; OCR is the only
+layer that knows it, and blank lines are not counted), then cap each block with
+
+```
+ceiling = min(pageCeiling, max(minSize, sourceRect.height / sourceLines))
+```
+
+so the font never exceeds the height of **one** printed line while a page of
+expectedly tall paragraphs keeps the flat body ceiling. Measured on the OPPO
+phone with an English→Hindi shipping label, at the photo height the result screen
+actually gives it: field type went from 12–17 px to 7–10 px, and no block paints
+over its neighbour (`test/translated_overlay_deck_test.dart`, three cases).
+
 ### When it cannot fit
 
 Long Hindi can be physically larger than the space between two printed lines.
-The overlay does not pretend otherwise: regions that cannot be drawn legibly are
-listed in `TranslatedDeckLayout.hiddenRegionIds`, and the overlay shows a small
-**"N translations did not fit on the image · Full text"** notice. The notice opens
-the Translate tab, where every region is present in reading order. Nothing is
-silently dropped from the model or from the UI.
+That happens on any page shown small — a phone holds the whole photo in the strip
+above the sheet, so a 960 x 1280 newspaper becomes roughly 360 x 330 logical
+pixels and an English column needs two to three times the height of the Hindi it
+replaces. The overlay does not pretend otherwise, and it distinguishes the two
+ways a translation can be incomplete:
+
+* `TranslatedDeckLayout.hiddenRegionIds` — regions with no legible place at all;
+* `TranslatedDeckLayout.shortenedRegionIds` — regions that **are** drawn, but whose
+  text had to be ellipsized to fit its box.
+
+Both feed one notice, so neither case can pass for a complete translation:
+**"1 more translation · 2 shortened available · Full text"**. Only the parts that
+apply are named, so a page that merely clipped two blocks never claims text is
+missing. The notice opens the Translate tab, where every region is present in
+reading order. Nothing is silently dropped from the model or from the UI.
+
+Measured on the OPPO phone with `docs`' second newspaper page at that viewport:
+1 hidden, 2 shortened; with the three-column page: 0 hidden, 7 shortened — where
+the old build drew those seven clipped boxes and said nothing.
+
+### What is not painted at all
+
+A region whose text holds no letter or digit in any script — a danda (`।`), a
+double danda (`॥`), a stray `.` or `-` — is **not drawn on the photo**. Real
+recognition produces these (the second newspaper page yields a lone `।` and a
+lone `॥` beside the cropped column), and painting them put an empty pill holding
+a full stop over clean paper. The rule is a Unicode-category test
+(`[\p{L}\p{N}]`), so it holds for Devanagari, Tamil, Latin and Arabic-Indic
+digits alike and needs no per-page special case.
+
+Their text is not lost: the region stays in the translation model, so it is still
+in the full translation sheet and the Translate tab. It is also **not** counted
+by `hiddenRegionIds`, because nothing legible was ever there — a lone danda is
+not a translation the page ran out of room for.
 
 ### Backing style
 
-Each **block** gets one rounded, paper-coloured backing at 95 % opacity
+Each **block** gets one rounded, paper-coloured backing at 98.5 % opacity
 (`surface`) with `onSurface` text, and the lines inside it share that single veil
 so a paragraph reads as one unit rather than a stack of cards.
 
@@ -376,7 +433,9 @@ room on the image is not covered, because there is no English to replace it.
 
 The veil is deliberately near-opaque: at 90 % the original words stayed visible
 as a grey ghost through the translation, which looks like overlapping text even
-when the rectangles do not overlap. **Nothing else is drawn** — no scrim over the
+when the rectangles do not overlap. 95 % was still not enough on a real phone
+screenshot — Devanagari under a 95 % veil could be read through the English — so
+it is 98.5 %: the paper's tone and grain survive, the source does not. **Nothing else is drawn** — no scrim over the
 photo, no full-image panel, no permanent rectangles around un-translated words,
 and no debug boxes (the existing opt-in OCR debug geometry toggle still draws the
 *source* boxes, which is exactly what you want when checking alignment). The

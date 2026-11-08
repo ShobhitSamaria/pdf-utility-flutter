@@ -17,6 +17,7 @@ import 'package:pdf_utility_flutter/pdf/domain/pdf_page_renderer.dart';
 import 'package:pdf_utility_flutter/pdf/domain/pdf_source_service.dart';
 import 'package:pdf_utility_flutter/pdf/domain/rendered_pdf_page.dart';
 import 'package:pdf_utility_flutter/pdf/presentation/pdf_import_screen.dart';
+import 'package:pdf_utility_flutter/pdf/presentation/searchable_pdf_screen.dart';
 import 'package:pdf_utility_flutter/screens/ocr_result_screen.dart';
 
 import 'support/translation_fakes.dart';
@@ -161,24 +162,34 @@ void main() {
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
   });
 
-  Widget harness() => AppScope(
+  Widget harness({
+    bool autoPick = false,
+    bool convertOnPick = false,
+    Widget Function(BuildContext context, String path)? searchableBuilder,
+  }) => AppScope(
     ocrService: ocr,
     translationService: FakeTranslationService(),
     debugGeometry: ValueNotifier<bool>(false),
     ocrScriptMode: ValueNotifier<OcrScriptMode>(OcrScriptMode.defaultMode),
     child: MaterialApp(
-      home: PdfImportScreen(source: source, renderer: renderer),
+      home: PdfImportScreen(
+        source: source,
+        renderer: renderer,
+        autoPick: autoPick,
+        convertOnPick: convertOnPick,
+        searchableBuilder: searchableBuilder,
+      ),
     ),
   );
 
   /// A phone-shaped surface, so nothing under test is clipped off screen.
-  Future<void> pumpScreen(WidgetTester tester) async {
+  Future<void> pumpScreen(WidgetTester tester, {Widget? app}) async {
     tester.view.physicalSize = const Size(1080, 2400);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(harness());
+    await tester.pumpWidget(app ?? harness());
     await tester.pump();
   }
 
@@ -213,6 +224,63 @@ void main() {
     expect(renderer.openCalls, 0);
   });
 
+  testWidgets('offers the searchable-PDF flow before a document is open', (
+    tester,
+  ) async {
+    await pumpScreen(tester);
+
+    expect(find.text('Make PDF Searchable'), findsOneWidget);
+
+    await tester.tap(find.text('Make PDF Searchable'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.byType(SearchablePdfScreen), findsOneWidget);
+    expect(find.text('Choose a PDF to make searchable'), findsOneWidget);
+  });
+
+  testWidgets('autoPick opens the platform picker without a second tap', (
+    tester,
+  ) async {
+    await pumpScreen(tester, app: harness(autoPick: true));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // One entry point, one picker: the empty screen is never shown as an extra
+    // step, and the chosen document is already open.
+    expect(source.calls, 1);
+    expect(renderer.openCalls, 1);
+    expect(find.text('Page 1 of 3'), findsOneWidget);
+  });
+
+  testWidgets('convertOnPick opens conversion instead of the page preview', (
+    tester,
+  ) async {
+    String? opened;
+    await pumpScreen(
+      tester,
+      app: harness(
+        autoPick: true,
+        convertOnPick: true,
+        searchableBuilder: (_, path) {
+          opened = path;
+          return const Scaffold(body: Text('Converting'));
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    // The picker is the only intermediate step: no page preview, no second
+    // button to press, and Back would land on Home because this screen was
+    // replaced rather than stacked under the conversion.
+    expect(source.calls, 1);
+    expect(opened, source.path);
+    expect(find.text('Converting'), findsOneWidget);
+    expect(find.text('Read this page'), findsNothing);
+    expect(renderer.openCalls, 0);
+  });
+
   testWidgets('cancelling the picker leaves the screen exactly as it was', (
     tester,
   ) async {
@@ -238,14 +306,12 @@ void main() {
     expect(find.text('report.pdf'), findsOneWidget);
     expect(find.text('Page 1 of 3'), findsOneWidget);
     expect(find.text('Read this page'), findsOneWidget);
-    // The preview is the rendered image, and the size is stated so a coarse
-    // render is visible before the read rather than after it.
+    // The preview is the rendered image, and the page is clearly identified as
+    // the one that will be read.
     expect(find.byType(Image), findsOneWidget);
-    expect(find.textContaining('1600 × 2263'), findsOneWidget);
-    expect(
-      find.textContaining('this is the image that will be read'),
-      findsOneWidget,
-    );
+    expect(find.text('This is the page that will be read.'), findsOneWidget);
+    // Searchable-PDF conversion stays reachable from the document it applies to.
+    expect(find.byTooltip('Make PDF Searchable'), findsOneWidget);
   });
 
   testWidgets('reading a page sends the previewed file to OCR', (tester) async {

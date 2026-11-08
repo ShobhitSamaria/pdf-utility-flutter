@@ -1,145 +1,40 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../app/app_brand.dart';
 import '../app/app_scope.dart';
 import '../app/app_theme.dart';
 import '../benchmark/presentation/benchmark_screen.dart';
 import '../ocr/data/image_source_service.dart';
 import '../ocr/domain/ocr_script_mode.dart';
 import '../ocr/domain/ocr_service.dart';
-import '../ocr/presentation/ocr_failure_notice.dart';
 import '../pdf/domain/pdf_creation.dart';
 import '../pdf/domain/pdf_page_draft.dart';
 import '../pdf/presentation/pdf_capture_screen.dart';
 import '../pdf/presentation/pdf_import_screen.dart';
 import '../pdf/presentation/pdf_review_screen.dart';
-import '../pdf/presentation/searchable_pdf_screen.dart';
-import 'camera_capture_screen.dart';
-import 'ocr_result_screen.dart';
+import 'extract_text_screen.dart';
+import 'ocr_flow_screen.dart';
 import 'widgets/app_bottom_sheet.dart';
 
-/// What the user picked in a Home action sheet.
+/// Which source the `Create PDF` sheet was opened for.
+enum _CreatePdfSource { camera, gallery }
+
+/// Home — two choices, in priority order.
 ///
-/// One enum for all three sheets, because `Scan document`, `Choose image` and
-/// `Import PDF` offer overlapping work with different wording: the wording
-/// belongs to the sheet (it is presentation), the behaviour belongs here.
-enum HomeAction {
-  /// Read text with the on-device recogniser — a photo, or a PDF page.
-  extractText,
-
-  /// Build a new PDF from captured or chosen pages: capture (or pick) the
-  /// pages, review and reorder them, name the file, then write it.
-  createPdf,
-
-  /// Give a scanned PDF a searchable text layer.
-  searchablePdf,
-}
-
-/// The three ways into the app, with the exact sheet each one shows.
+/// `OCR Scanner` is the product: a filled card at the top, one tap to the
+/// source question and straight into the recogniser. `Create PDF` sits under it
+/// as a quieter card, because a document is a by-product of a scan, not the
+/// reason to open the app.
 ///
-/// Keeping the sheet contents in the enum means the three entry points cannot
-/// drift apart: they are one component ([showAppActionSheet]) with three sets
-/// of rows, exactly as the design has them.
-enum _EntryPoint {
-  scan(
-    sheetTitle: 'Scan document',
-    actionLabel: 'Scan document',
-    actionIcon: Icons.photo_camera_outlined,
-    actions: <SheetAction<HomeAction>>[
-      SheetAction<HomeAction>(
-        value: HomeAction.extractText,
-        icon: Icons.text_snippet_outlined,
-        title: 'Extract Text (OCR)',
-        subtitle: 'Scan, copy and translate',
-      ),
-      SheetAction<HomeAction>(
-        value: HomeAction.createPdf,
-        icon: Icons.picture_as_pdf_outlined,
-        title: 'Create PDF',
-        subtitle: 'Capture one or more pages',
-      ),
-    ],
-  ),
-
-  image(
-    sheetTitle: 'Choose image',
-    actionLabel: 'Choose image',
-    actionIcon: Icons.image_outlined,
-    actions: <SheetAction<HomeAction>>[
-      SheetAction<HomeAction>(
-        value: HomeAction.extractText,
-        icon: Icons.text_snippet_outlined,
-        title: 'Extract Text',
-        subtitle: 'Read text from an image',
-      ),
-      SheetAction<HomeAction>(
-        value: HomeAction.createPdf,
-        icon: Icons.picture_as_pdf_outlined,
-        title: 'Create PDF',
-        subtitle: 'Combine images into a PDF',
-      ),
-    ],
-  ),
-
-  pdf(
-    sheetTitle: 'Import PDF',
-    actionLabel: 'Import PDF',
-    actionIcon: Icons.upload_file_outlined,
-    actions: <SheetAction<HomeAction>>[
-      // One action, deliberately: importing a PDF is for reading it. The
-      // separate viewer and page-selection screens still exist for the flows
-      // that use them, but "View PDF" is no longer offered from Home — it was
-      // a second, differently-shaped way into the same document and it only
-      // made the choice harder.
-      SheetAction<HomeAction>(
-        value: HomeAction.extractText,
-        icon: Icons.text_snippet_outlined,
-        title: 'Extract Text',
-        subtitle: 'Choose a page to recognize',
-      ),
-      SheetAction<HomeAction>(
-        value: HomeAction.searchablePdf,
-        icon: Icons.manage_search_outlined,
-        title: 'Make Searchable PDF',
-        subtitle: 'Add a text layer to a scan',
-      ),
-    ],
-  );
-
-  const _EntryPoint({
-    required this.sheetTitle,
-    required this.actionLabel,
-    required this.actionIcon,
-    required this.actions,
-  });
-
-  /// Title shown at the top of the bottom sheet.
-  final String sheetTitle;
-
-  /// Label of the Home control that opens it.
-  final String actionLabel;
-
-  /// Icon of the Home control that opens it.
-  final IconData actionIcon;
-
-  /// The rows offered by this entry point's sheet.
-  final List<SheetAction<HomeAction>> actions;
-}
-
-/// Home — the app's single entry screen, to the approved design
-/// ([Figma `2:1119`], with the three sheets [`7:1423`, `7:1500`, `7:1577`]).
+/// Everything else — importing a PDF, the searchable-PDF conversion, the OCR
+/// benchmark — still exists and is still wired the same way; it is simply not
+/// competing for the first screen. The script override moved into Settings,
+/// where the header icon already led.
 ///
-/// The screen is deliberately thin: it presents three ways in and asks nothing
-/// else of the user. The script is **not** a question they have to answer —
-/// [OcrScriptMode.auto] decides from the photo itself — so it is reduced to a
-/// quiet `Script: Auto` row that opens the same settings sheet as the header's
-/// sliders icon.
-///
-/// Nothing about *how* text is read changed here: the camera, the gallery
-/// picker, the recogniser call, the elapsed-time reporting and the PDF import
-/// route are the same objects and the same calls as before this redesign.
+/// The reading itself is unchanged: the camera, the photo picker, the PDF
+/// importer and the recogniser call are the same objects and the same calls as
+/// before this screen was reduced.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
@@ -178,144 +73,41 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final ImageSourceService _imageSource = ImageSourceService();
 
-  bool _busy = false;
+  // --- OCR Scanner ------------------------------------------------------------
 
-  /// Ticks while a recognition call is in flight, so the progress indicator
-  /// reports how long the phone has actually been working instead of spinning
-  /// anonymously.
-  Timer? _readingTimer;
-  Duration _elapsed = Duration.zero;
-
-  static const _tick = Duration(milliseconds: 200);
-
-  @override
-  void dispose() {
-    _readingTimer?.cancel();
-    super.dispose();
-  }
-
-  void _startReadingTimer() {
-    _readingTimer?.cancel();
-    _elapsed = Duration.zero;
-    _readingTimer = Timer.periodic(_tick, (_) {
-      if (!mounted) return;
-      setState(() => _elapsed += _tick);
-    });
-  }
-
-  void _stopReadingTimer() {
-    _readingTimer?.cancel();
-    _readingTimer = null;
-  }
-
-  /// Reads [imagePath] with the on-device recogniser and opens the result.
-  ///
-  /// Unchanged from before the redesign: the script comes from the shared
-  /// [AppScope] (auto by default), failures reach the user as a sentence, and
-  /// the progress ticker stops the moment the work does.
-  Future<void> _runOcrOn(String? imagePath) async {
-    if (imagePath == null || !mounted) return;
-
-    final scope = AppScope.of(context);
-    final navigator = Navigator.of(context);
-    final mode = scope.ocrScriptMode.value;
-
-    setState(() => _busy = true);
-    _startReadingTimer();
-    try {
-      final result = await scope.ocrService.recognizeImage(
-        imagePath,
-        mode: mode,
-      );
-      // Stop reporting progress as soon as the work is done; the push below
-      // waits for the result screen to be popped, which is not work.
-      _stopReadingTimer();
-      if (!mounted) return;
-      setState(() => _busy = false);
-
-      await navigator.push(
-        MaterialPageRoute<void>(
-          builder: (_) => OcrResultScreen(result: result),
-        ),
-      );
-    } catch (error, stackTrace) {
-      // One reporter for every OCR entry point: it keeps the original error for
-      // the debug log and Details view, and shows the user a plain sentence.
-      if (mounted) showOcrFailure(context, error, stackTrace: stackTrace);
-    } finally {
-      _stopReadingTimer();
-      if (mounted && _busy) setState(() => _busy = false);
-    }
-  }
-
-  // --- the three ways in -----------------------------------------------------
-
-  Future<void> _openSheet(_EntryPoint entry) async {
-    if (_busy) return;
-
-    final action = await showAppActionSheet<HomeAction>(
-      context: context,
-      title: entry.sheetTitle,
-      actions: entry.actions,
+  /// Asks which source to read from, then runs that source's existing flow.
+  Future<void> _openExtractText() async {
+    final source = await Navigator.of(context).push<ExtractTextSource>(
+      MaterialPageRoute<ExtractTextSource>(
+        builder: (_) => const ExtractTextScreen(),
+      ),
     );
-    if (!mounted || action == null) return;
+    if (!mounted || source == null) return;
 
-    switch (action) {
-      case HomeAction.extractText:
-        await _extractText(entry);
-      // One "Create PDF" action, two sources: the sheet the user came from is
-      // what decides whether the pages come from the camera or the gallery.
-      case HomeAction.createPdf:
-        switch (entry) {
-          case _EntryPoint.scan:
-            await _createPdfFromCamera();
-          case _EntryPoint.image:
-            await _createPdfFromGallery();
-          case _EntryPoint.pdf:
-            // Not offered by this sheet (see _EntryPoint.pdf), so nothing to do.
-            break;
-        }
-      case HomeAction.searchablePdf:
-        await _openSearchablePdf();
-    }
-  }
-
-  /// Gives a scanned PDF a text layer. Its own screen, because the work is
-  /// long-running (one OCR pass per page) and needs its own progress.
-  Future<void> _openSearchablePdf() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (_) => const SearchablePdfScreen()),
-    );
-  }
-
-  Future<void> _extractText(_EntryPoint entry) async {
-    switch (entry) {
-      case _EntryPoint.scan:
-        await _extractTextFromCamera();
-      case _EntryPoint.image:
-        await _extractTextFromGallery();
-      case _EntryPoint.pdf:
+    switch (source) {
+      case ExtractTextSource.camera:
+      case ExtractTextSource.gallery:
+        await _openOcrFlow(source);
+      case ExtractTextSource.importPdf:
         await _openPdfImport();
     }
   }
 
-  Future<void> _extractTextFromCamera() async {
-    final capture =
-        widget.capturePage ??
-        (BuildContext context) => Navigator.of(context).push<String>(
-          MaterialPageRoute<String>(
-            builder: (_) => const CameraCaptureScreen(),
+  /// Runs the chosen image source inside a route that stays above Home.
+  ///
+  /// Keeping the flow on its own route is what removes the Home flash: the
+  /// camera or picker is pushed over [OcrFlowScreen], and the completed read
+  /// replaces that screen, so Home is never the visible screen in between.
+  Future<void> _openOcrFlow(ExtractTextSource source) =>
+      Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => OcrFlowScreen(
+            source: source,
+            capturePage: widget.capturePage,
+            pickFromGallery: widget.pickFromGallery,
           ),
-        );
-    final path = await capture(context);
-    await _runOcrOn(path);
-  }
-
-  Future<void> _extractTextFromGallery() async {
-    final pick = widget.pickFromGallery ?? _imageSource.pickFromGallery;
-    final path = await pick();
-    await _runOcrOn(path);
-  }
+        ),
+      );
 
   /// Imports a PDF and reads it.
   ///
@@ -324,11 +116,45 @@ class _HomeScreenState extends State<HomeScreen> {
   /// is on screen, and therefore which file to read.
   Future<void> _openPdfImport() async {
     await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (_) => const PdfImportScreen()),
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const PdfImportScreen(autoPick: true, convertOnPick: true),
+      ),
     );
   }
 
-  // --- PDF creation and viewing ---------------------------------------------
+  // --- Create PDF -------------------------------------------------------------
+
+  /// Camera or gallery? Both go to the existing PDF creation flow; only the
+  /// source of the pages differs.
+  Future<void> _openCreatePdfSheet() async {
+    final source = await showAppActionSheet<_CreatePdfSource>(
+      context: context,
+      title: 'Create PDF',
+      actions: const <SheetAction<_CreatePdfSource>>[
+        SheetAction<_CreatePdfSource>(
+          value: _CreatePdfSource.camera,
+          icon: Icons.photo_camera_outlined,
+          title: 'Camera',
+          subtitle: 'Capture one or more pages',
+        ),
+        SheetAction<_CreatePdfSource>(
+          value: _CreatePdfSource.gallery,
+          icon: Icons.photo_library_outlined,
+          title: 'Gallery',
+          subtitle: 'Combine images into a PDF',
+        ),
+      ],
+    );
+    if (!mounted || source == null) return;
+
+    switch (source) {
+      case _CreatePdfSource.camera:
+        await _createPdfFromCamera();
+      case _CreatePdfSource.gallery:
+        await _createPdfFromGallery();
+    }
+  }
 
   /// Scan document → Create PDF: capture a session of pages, then review them.
   Future<void> _createPdfFromCamera() async {
@@ -347,7 +173,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _reviewPages(pages, PdfPageOrigin.camera);
   }
 
-  /// Choose image → Create PDF: pick several images at once, then review them.
+  /// Choose images → Create PDF: pick several at once, then review them.
   Future<void> _createPdfFromGallery() async {
     final pick = widget.pickImages ?? _imageSource.pickMultipleFromGallery;
     final pages = await pick();
@@ -386,8 +212,8 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Opens the settings sheet: the script choice, plus the developer tools in a
   /// debug build only.
   ///
-  /// Reachable from two places on purpose — the header's sliders icon and the
-  /// quiet `Script: Auto` row — because they are the same question.
+  /// Now the only way in, from the header icon: the `Script: Auto` footer is
+  /// gone, because it duplicated this sheet and read as a dead label.
   Future<void> _openSettingsSheet() async {
     final scope = AppScope.of(context);
     await showModalBottomSheet<void>(
@@ -405,8 +231,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final scope = AppScope.of(context);
-
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -419,19 +243,57 @@ class _HomeScreenState extends State<HomeScreen> {
                     AppSpacing.xl,
                     AppSpacing.lg,
                     AppSpacing.xl,
-                    AppSpacing.lg,
+                    AppSpacing.xxl,
                   ),
-                  child: _Hero(
-                    busy: _busy,
-                    elapsed: _elapsed,
-                    scriptMode: scope.ocrScriptMode,
-                    onOpenSheet: _openSheet,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 88,
+                        height: 88,
+                        decoration: BoxDecoration(
+                          color: AppColors.tile,
+                          borderRadius: BorderRadius.circular(
+                            AppRadii.heroTile,
+                          ),
+                        ),
+                        child: const Center(child: _ScanGlyph()),
+                      ),
+                      const SizedBox(height: AppSpacing.xxl),
+                      Text(
+                        'Your documents,\nready to use.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineMedium,
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      Text(
+                        'Scan, extract text and translate.\nAll in one place.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: AppSpacing.xxl),
+                      _HomeOptionCard(
+                        key: const Key('home-extract-text'),
+                        icon: Icons.text_snippet_outlined,
+                        title: 'OCR Scanner',
+                        subtitle: 'Scan photos or PDFs to extract text.',
+                        primary: true,
+                        onTap: _openExtractText,
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      _HomeOptionCard(
+                        key: const Key('home-create-pdf'),
+                        icon: Icons.picture_as_pdf_outlined,
+                        title: 'Create PDF',
+                        subtitle: 'Create PDF using camera or gallery images.',
+                        primary: false,
+                        onTap: _openCreatePdfSheet,
+                      ),
+                    ],
                   ),
                 ),
               ),
             ),
-            _ScriptRow(mode: scope.ocrScriptMode, onTap: _openSettingsSheet),
-            const SizedBox(height: AppSpacing.md),
           ],
         ),
       ),
@@ -458,15 +320,17 @@ class _HomeHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.document_scanner_outlined,
-            size: 22,
-            color: AppColors.primary,
+          Image.asset(
+            'assets/branding/logo_mark.png',
+            width: 26,
+            height: 26,
+            filterQuality: FilterQuality.high,
+            excludeFromSemantics: true,
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'PDF Utility',
+              AppBrand.name,
               style: theme.textTheme.titleMedium?.copyWith(fontSize: 17),
             ),
           ),
@@ -481,196 +345,95 @@ class _HomeHeader extends StatelessWidget {
   }
 }
 
-/// The centred hero: glyph tile, headline, subtitle, the primary action and the
-/// two quieter ones.
-class _Hero extends StatelessWidget {
-  const _Hero({
-    required this.busy,
-    required this.elapsed,
-    required this.scriptMode,
-    required this.onOpenSheet,
+/// One of the two Home choices.
+///
+/// The primary card is filled with the brand navy; the secondary one is a
+/// hairline card on the page. Same shape, same icon tile, same tap target — the
+/// hierarchy is carried by surface and weight, not by a different component.
+class _HomeOptionCard extends StatelessWidget {
+  const _HomeOptionCard({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.primary,
+    required this.onTap,
   });
 
-  final bool busy;
-  final Duration elapsed;
-  final ValueNotifier<OcrScriptMode> scriptMode;
-  final void Function(_EntryPoint entry) onOpenSheet;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool primary;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 88,
-          height: 88,
-          decoration: BoxDecoration(
-            color: AppColors.tile,
-            borderRadius: BorderRadius.circular(AppRadii.heroTile),
-          ),
-          child: const Center(child: _ScanGlyph()),
-        ),
-        const SizedBox(height: AppSpacing.xxl),
-        Text(
-          'Your documents,\nready to use.',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.headlineMedium,
-        ),
-        const SizedBox(height: AppSpacing.md),
-        Text(
-          'Scan, extract text and translate.\nAll in one place.',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.bodyMedium,
-        ),
-        const SizedBox(height: AppSpacing.xxl),
-        SizedBox(
-          width: double.infinity,
-          child: FilledButton.icon(
-            onPressed: busy ? null : () => onOpenSheet(_EntryPoint.scan),
-            icon: Icon(_EntryPoint.scan.actionIcon, size: 20),
-            label: Text(_EntryPoint.scan.actionLabel),
-          ),
-        ),
-        const SizedBox(height: AppSpacing.md),
-        // A `Wrap`, not a `Row`: the two labels sit side by side on a normal
-        // phone but must stack rather than overflow on a narrow screen or at a
-        // large text scale.
-        Wrap(
-          alignment: WrapAlignment.center,
-          spacing: AppSpacing.md,
-          runSpacing: AppSpacing.xs,
-          children: [
-            _GhostAction(
-              entry: _EntryPoint.image,
-              onPressed: busy ? null : () => onOpenSheet(_EntryPoint.image),
-            ),
-            _GhostAction(
-              entry: _EntryPoint.pdf,
-              onPressed: busy ? null : () => onOpenSheet(_EntryPoint.pdf),
-            ),
-          ],
-        ),
-        if (busy) ...[
-          const SizedBox(height: AppSpacing.xl),
-          _ReadingProgress(elapsed: elapsed, scriptMode: scriptMode),
-        ],
-      ],
-    );
-  }
-}
+    final foreground = primary ? Colors.white : AppColors.ink;
+    final secondaryInk = primary ? Colors.white70 : AppColors.muted;
 
-/// A secondary entry point: icon and label, no border, no fill.
-class _GhostAction extends StatelessWidget {
-  const _GhostAction({required this.entry, required this.onPressed});
-
-  final _EntryPoint entry;
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return TextButton.icon(
-      onPressed: onPressed,
-      icon: Icon(entry.actionIcon, size: 18),
-      label: Text(entry.actionLabel),
-      style: TextButton.styleFrom(
-        foregroundColor: AppColors.primary,
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.sm,
-          vertical: AppSpacing.sm,
-        ),
-        textStyle: Theme.of(context).textTheme.titleSmall,
-      ),
-    );
-  }
-}
-
-/// The elapsed-time report while a recognition call is running.
-///
-/// Kept from the pre-redesign screen: it is the only evidence the user gets that
-/// the phone is working, and it is the honest place to say that Auto may read
-/// the page twice.
-class _ReadingProgress extends StatelessWidget {
-  const _ReadingProgress({required this.elapsed, required this.scriptMode});
-
-  final Duration elapsed;
-  final ValueNotifier<OcrScriptMode> scriptMode;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.lg,
-        vertical: AppSpacing.md,
-      ),
-      decoration: BoxDecoration(
-        color: AppColors.rowTint,
+    return Material(
+      color: primary ? AppColors.primary : AppColors.surface,
+      borderRadius: BorderRadius.circular(AppRadii.card),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(AppRadii.card),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg,
+            vertical: 18,
           ),
-          const SizedBox(width: AppSpacing.md),
-          ValueListenableBuilder<OcrScriptMode>(
-            valueListenable: scriptMode,
-            builder: (context, mode, _) => Text(
-              'Reading text… '
-              '${(elapsed.inMilliseconds / 1000).toStringAsFixed(1)} s'
-              '${mode.mayReadTwice ? ' (up to two passes)' : ''}',
-              style: theme.textTheme.bodySmall,
-            ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppRadii.card),
+            border: primary ? null : Border.all(color: AppColors.hairline),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-/// The bottom line: `Script: Auto`, opening the same sheet as the sliders icon.
-class _ScriptRow extends StatelessWidget {
-  const _ScriptRow({required this.mode, required this.onTap});
-
-  final ValueNotifier<OcrScriptMode> mode;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return ValueListenableBuilder<OcrScriptMode>(
-      valueListenable: mode,
-      builder: (context, current, _) => TextButton(
-        onPressed: onTap,
-        style: TextButton.styleFrom(
-          foregroundColor: AppColors.primary,
-          minimumSize: const Size(0, 44),
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Script: ', style: theme.textTheme.bodySmall),
-            // Flexible, not fixed: a long override label (`Hindi / Devanagari`)
-            // or a large text scale must ellipsize rather than overflow.
-            Flexible(
-              child: Text(
-                current.isAuto ? 'Auto' : current.label,
-                style: theme.textTheme.labelMedium,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+          child: Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: primary ? Colors.white24 : AppColors.tile,
+                  borderRadius: BorderRadius.circular(AppRadii.cardTile),
+                ),
+                child: Icon(
+                  icon,
+                  color: primary ? Colors.white : AppColors.primary,
+                  size: 24,
+                ),
               ),
-            ),
-            const SizedBox(width: 2),
-            const Icon(Icons.expand_more, size: 18, color: AppColors.primary),
-          ],
+              const SizedBox(width: AppSpacing.lg),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: foreground,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: secondaryInk,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Icon(
+                Icons.chevron_right,
+                size: 22,
+                color: primary ? Colors.white70 : AppColors.muted,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -824,6 +587,42 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                 ),
               ),
             ],
+            // App identity, so Settings doubles as the About screen. Kept at
+            // the bottom and out of the way; the tagline lives here and on the
+            // splash rather than on every screen.
+            const SizedBox(height: AppSpacing.lg),
+            const Divider(),
+            const SizedBox(height: AppSpacing.md),
+            Row(
+              children: [
+                Image.asset(
+                  'assets/branding/logo_mark.png',
+                  width: 36,
+                  height: 36,
+                  filterQuality: FilterQuality.high,
+                  excludeFromSemantics: true,
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(AppBrand.name, style: theme.textTheme.titleSmall),
+                      const SizedBox(height: 2),
+                      Text(
+                        AppBrand.tagline,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Version ${AppBrand.version}',
+                        style: theme.textTheme.labelSmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       ),

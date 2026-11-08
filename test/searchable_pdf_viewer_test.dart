@@ -200,7 +200,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Search'));
     await tester.pump();
-    expect(find.text('Search Hindi or English text'), findsOneWidget);
+    expect(find.text('Search this PDF'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField), 'Total 120');
     await tester.pump();

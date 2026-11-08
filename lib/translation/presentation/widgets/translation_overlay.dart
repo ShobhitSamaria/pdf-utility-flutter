@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../ocr/presentation/ocr_coordinate_mapper.dart';
 import '../../domain/translated_region.dart';
+import '../../translation_log.dart';
 import '../translated_overlay_deck.dart';
 import '../translated_text_layout.dart';
 
@@ -20,19 +22,18 @@ import '../translated_text_layout.dart';
 ///   belong together flow as one paragraph, so a translation longer than its own
 ///   line pushes the rest of its paragraph down instead of growing over it or
 ///   being flattened to fit one line height.
-/// * Each block gets **one** backing — a single subtle, rounded, tinted veil
-///   behind all of its lines, so a paragraph reads as one translated unit rather
-///   than a stack of separate cards. Nothing is drawn for the image as a whole,
-///   no scrim, and never a permanent rectangle around un-translated words.
-/// * The backing is **opaque enough to mask the words underneath** (97 %): a
-///   translucent veil left the dark source text visible through the translated
-///   text, which reads exactly like two strings printed on top of each other.
-///   Only the geometry was fixed before; the ghosting had to be fixed here.
-/// * The backing is not interactive at all ([IgnorePointer]): every tap that
-///   lands on a line's text opens that line's full translation, and every tap
-///   that misses falls straight through to the OCR layer, so word selection
-///   keeps working and gets the whole surface back when translation is switched
-///   off.
+/// * Each translated line is drawn on a light, near-opaque backing sized to its
+///   own text box. The backing **masks the printed words underneath**, so the
+///   source language and the translation no longer compete on the same pixels —
+///   the readability problem with drawing directly on the photo. It is a tight
+///   per-line surface, not a panel: it never extends past the OCR box it came
+///   from, and un-translated areas keep the photograph untouched.
+/// * Text is dark navy on that backing, with the padding the fitter measured,
+///   so it reads like ink on paper instead of white-on-photo decoration.
+/// * The text layer is the only thing that takes input: every tap that lands on
+///   a line's text opens that line's full translation, and every tap that misses
+///   falls straight through to the OCR layer, so word selection keeps working and
+///   gets the whole surface back when translation is switched off.
 /// * When the page is too dense to hold every translation legibly, the deck
 ///   draws what fits and this widget shows a small notice with the number that
 ///   did not fit — tappable through [onOverflowTap], which opens the full text.
@@ -69,10 +70,15 @@ class TranslationOverlay extends StatelessWidget {
   /// Line cap used when the overlay carries paragraph units.
   ///
   /// The fitter's default cap (5) is right for a single source line, but a
-  /// translated paragraph needs more lines: capping it at five would ellipsize
-  /// the middle of every paragraph even when the space is there. The cap is
-  /// still finite so a pathological translation cannot be measured forever.
-  static const int paragraphLineCap = 16;
+  /// translated paragraph genuinely runs to dozens of lines: one column of a
+  /// Hindi newspaper is ~700 characters, which is 20–30 lines of English at a
+  /// legible size inside a phone-width column. The cap is what the fitter
+  /// measures against, so too small a value makes every paragraph look like it
+  /// "does not fit" at every font size — the font then collapses to the 7 px
+  /// floor and the text ellipsizes, which is what the overlay used to do on a
+  /// dense page. 48 leaves room for the longest paragraph this app can meet
+  /// while still bounding the measurement work.
+  static const int paragraphLineCap = 48;
 
   @override
   Widget build(BuildContext context) {
@@ -114,6 +120,13 @@ class TranslationOverlay extends StatelessWidget {
               id: region.id,
               text: region.translatedText,
               sourceRect: sourceRect,
+              // Whole-page translation produces paragraph units, and a
+              // paragraph is placed inside its own region rather than flowed
+              // into a slice of the page. See [TranslatedDeckItem.isParagraph].
+              isParagraph: region.kind == TranslatedRegionKind.paragraph,
+              // The number of printed lines the region covers, which is what
+              // keeps a one-row label field from being set in body-sized type.
+              sourceLines: region.sourceLines,
             ),
           );
         }
@@ -131,6 +144,10 @@ class TranslationOverlay extends StatelessWidget {
         // One flat font ceiling for a paragraph page. A paragraph region is
         // tall because it holds many lines, not because it is a heading; letting
         // the height boost the font would give each paragraph its own size.
+        //
+        // The deck still lowers this per region, to the height of *one* printed
+        // line (`sourceLines`), because on a form the two are the same region
+        // and a single-row field must not be set larger than its own row.
         final maxSizeCeiling = hasParagraphs
             ? TranslatedTextLayout.defaultMaxSize
             : null;
@@ -146,8 +163,9 @@ class TranslationOverlay extends StatelessWidget {
         );
         // The notice is part of the layout problem, not something painted on
         // top of the answer: reserve its strip and lay the page out again, so
-        // it can never cover the last translated line.
-        if (layout.hiddenRegionIds.isNotEmpty) {
+        // it can never cover the last translated line. A page whose blocks were
+        // cut short needs the notice just as much as one that hid a region.
+        if (layout.hasOverflow) {
           layout = TranslatedOverlayDeck.layout(
             items: items,
             imageRect: imageRect,
@@ -160,28 +178,15 @@ class TranslationOverlay extends StatelessWidget {
           );
         }
         final blocks = layout.blocks;
-        if (blocks.isEmpty && layout.hiddenRegionIds.isEmpty) {
+        if (blocks.isEmpty && !layout.hasOverflow) {
           return const SizedBox.shrink();
         }
+        _logLayout(layout, viewport);
 
+        // Text only: the translation is painted straight onto the photo, so the
+        // image keeps its own paper, borders and barcodes instead of acquiring a
+        // grid of white cards.
         final children = <Widget>[];
-
-        // Backings first, so they are always *behind* every line of text even
-        // when two blocks are adjacent.
-        for (final block in blocks) {
-          children.add(
-            Positioned.fromRect(
-              key: ValueKey<String>('translated-block-${block.id}'),
-              // The veil covers the paragraph's **source** lines as well as the
-              // translation, so the Hindi it replaces cannot show through around
-              // a shorter English text (see `TranslatedBlockPlacement.coverage`).
-              rect: block.coverage,
-              child: const IgnorePointer(child: TranslatedBlockPill()),
-            ),
-          );
-        }
-
-        // Then the text, one tappable slot per line, positioned by the flow.
         for (final block in blocks) {
           for (final line in block.lines) {
             final region = regionById[line.id];
@@ -213,7 +218,9 @@ class TranslationOverlay extends StatelessWidget {
 
         // Anything the page could not hold is reachable here instead of just
         // missing: the number is honest, and the action opens the full text.
-        if (layout.hiddenRegionIds.isNotEmpty) {
+        // A block that was cut short to fit is named here too — otherwise its
+        // ellipsis would be the only evidence that something is missing.
+        if (layout.hasOverflow) {
           children.add(
             Positioned(
               left: 8,
@@ -223,6 +230,7 @@ class TranslationOverlay extends StatelessWidget {
                 alignment: Alignment.bottomCenter,
                 child: TranslatedOverflowNotice(
                   count: layout.hiddenRegionIds.length,
+                  shortened: layout.shortenedRegionIds.length,
                   onTap: onOverflowTap,
                 ),
               ),
@@ -237,78 +245,59 @@ class TranslationOverlay extends StatelessWidget {
   }
 }
 
-/// The single backing shared by every line of one translated block.
+/// Debug-only summary of one fitted page, so a device run answers *why* a page
+/// looks the way it does instead of leaving it to a screenshot.
 ///
-/// This is what makes a paragraph read as one translated unit: one rounded,
-/// tinted veil behind the whole run of lines, instead of one card per line with
-/// visible seams between them.
-///
-/// Public so the styling lives in exactly one place, and so a widget test can
-/// assert the veil rather than trusting an eyeball.
-class TranslatedBlockPill extends StatelessWidget {
-  const TranslatedBlockPill({super.key});
-
-  /// Corner radius of the backing. Subtle on purpose: a translated block sits on
-  /// a photo and must not read as a button.
-  static const double radius = 3;
-
-  /// Opacity of the veil.
-  ///
-  /// Deliberately close to opaque: the block has to *mask* the original words it
-  /// replaces. At the previous 0.9 the dark source text stayed visible as a
-  /// grey ghost through the translation, which looks like the two strings were
-  /// printed on top of each other even when their rectangles never overlapped.
-  static const double backingAlpha = 0.95;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final corners = BorderRadius.circular(radius);
-
-    return DecoratedBox(
-      // The shadow is painted *outside* the clip — a ClipRRect above it would
-      // clip the blur away and leave the block looking pasted on. It is kept
-      // very tight: the veil should read as the page now that it covers the
-      // paragraph, not as a floating card.
-      decoration: BoxDecoration(
-        borderRadius: corners,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 2,
-            offset: const Offset(0, 0.5),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: corners,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            // Lens-like veil: the page's own paper colour rather than a grey app
-            // card, dense enough to *mask* the Hindi underneath, and with only a
-            // whisper of an edge so adjacent blocks do not read as bubbles.
-            //
-            // 95 %, not 90 %: measured on a photo, a 90 % veil left dark source
-            // words legible through the translation as a grey ghost. The
-            // remaining 5 % keeps the block part of the photograph without
-            // letting anything beneath show.
-            color: scheme.surface.withValues(alpha: backingAlpha),
-            border: Border.all(
-              color: scheme.outlineVariant.withValues(alpha: 0.28),
-              width: 0.5,
-            ),
-          ),
-        ),
-      ),
+/// Filter a phone with `adb logcat | grep PDF_UTILITY_TRANSLATION`. Each block
+/// line reports the box it was given, the source box it came from, how many
+/// characters it holds and whether the fitter had to ellipsize it — a block
+/// whose text is longer than its room shows `ellipsized=true`, which is the
+/// difference between "the translation is short" and "the translation is
+/// clipped".
+void _logLayout(TranslatedDeckLayout layout, Size viewport) {
+  if (!kDebugMode) return;
+  final shortened = layout.blocks
+      .where((block) => block.lines.any((line) => line.layout.ellipsized))
+      .length;
+  translationLog(
+    'overlay: viewport=${viewport.width.toStringAsFixed(0)}x'
+    '${viewport.height.toStringAsFixed(0)} blocks=${layout.blocks.length} '
+    'hidden=${layout.hiddenRegionIds.length} shortened=$shortened',
+  );
+  for (final block in layout.blocks) {
+    final first = block.lines.first;
+    final chars = block.lines.fold<int>(0, (n, line) => n + line.text.length);
+    translationLog(
+      'overlay: #${block.id} '
+      'size=${first.layout.style.fontSize?.toStringAsFixed(1)} '
+      'box=${first.box.left.toStringAsFixed(0)},'
+      '${first.box.top.toStringAsFixed(0)} '
+      'w=${block.box.width.toStringAsFixed(0)} '
+      'h=${block.box.height.toStringAsFixed(0)} '
+      'src=${first.sourceRect.width.toStringAsFixed(0)}x'
+      '${first.sourceRect.height.toStringAsFixed(0)} '
+      'chars=$chars '
+      'ellipsized=${block.lines.any((line) => line.layout.ellipsized)}',
     );
   }
 }
 
+/// The surface painted behind one translated line.
+///
+/// 94 % opaque warm white: it hides the source text well enough to read the
+/// translation, while the remaining 6 % keeps a trace of the page's tone so the
+/// overlay still feels printed on the photo.
+const Color translatedTextBacking = Color(0xF0FBFAF7);
+
+/// Radius of that surface — a hair of rounding, not a card.
+const double translatedRegionRadius = 3;
+
 /// One translated line: its text, drawn in the slot the flow gave it.
 ///
-/// Deliberately has no backing of its own — the block's [TranslatedBlockPill]
-/// is behind it. The padding is the padding its geometry was measured with, so
-/// the text sits exactly where [TranslatedTextLayout] placed it.
+/// The slot fills the line's measured box with a light, near-opaque backing so
+/// the original print underneath cannot show through the translation. The
+/// padding is the padding its geometry was measured with, so the text sits
+/// exactly where [TranslatedTextLayout] placed it.
 class TranslatedRegionBox extends StatelessWidget {
   const TranslatedRegionBox({
     super.key,
@@ -344,29 +333,38 @@ class TranslatedRegionBox extends StatelessWidget {
     // deliberate last resort: the alternative is glyphs bleeding over the next
     // translated line, which is the defect this overlay had.
     final slot = layout.paintText
-        ? Padding(
-            // Minimal and proportional: a tight constant either side, and a
-            // vertical inset that grows with the region. This is the same number
-            // the fitter measured against, so the text cannot end up padded
-            // against a different value than the one its box was sized with.
-            padding: EdgeInsets.symmetric(
-              horizontal: layout.insetX,
-              vertical: layout.insetY,
+        ? DecoratedBox(
+            // A translucent paper surface: enough opacity to hide the source
+            // print under this line, enough transparency that it still belongs
+            // to the photograph rather than looking like a pasted card.
+            decoration: BoxDecoration(
+              color: translatedTextBacking,
+              borderRadius: BorderRadius.circular(translatedRegionRadius),
             ),
-            child: Align(
-              alignment: AlignmentDirectional.topStart,
-              child: Text(
-                text,
-                // onSurface over the block's surfaceContainerHighest veil is a
-                // guaranteed high-contrast pair in both light and dark themes.
-                style: layout.style.copyWith(color: scheme.onSurface),
-                maxLines: layout.maxLines,
-                overflow: TextOverflow.ellipsis,
-                textScaler: textScaler,
-                textDirection: textDirection,
-                textAlign: TextAlign.start,
-                // The fitter measured with the same wrapping rules.
-                softWrap: true,
+            child: Padding(
+              // Minimal and proportional: a tight constant either side, and a
+              // vertical inset that grows with the region. This is the same
+              // number the fitter measured against, so the text cannot end up
+              // padded against a different value than its box was sized with.
+              padding: EdgeInsets.symmetric(
+                horizontal: layout.insetX,
+                vertical: layout.insetY,
+              ),
+              child: Align(
+                alignment: AlignmentDirectional.topStart,
+                child: Text(
+                  text,
+                  // Dark ink on the light backing. No halo is needed now that
+                  // the backing separates the glyphs from the print below.
+                  style: layout.style.copyWith(color: scheme.onSurface),
+                  maxLines: layout.maxLines,
+                  overflow: TextOverflow.ellipsis,
+                  textScaler: textScaler,
+                  textDirection: textDirection,
+                  textAlign: TextAlign.start,
+                  // The fitter measured with the same wrapping rules.
+                  softWrap: true,
+                ),
               ),
             ),
           )
@@ -394,6 +392,10 @@ class TranslatedRegionBox extends StatelessWidget {
   }
 }
 
+/// Corner radius of the overflow notice — the only rounded surface left in the
+/// overlay, because it is a control rather than part of the photograph.
+const double _noticeRadius = 3;
+
 /// The fallback for a photo too dense to hold every translation.
 ///
 /// A long Hindi sentence can be physically larger than the space between two
@@ -403,10 +405,19 @@ class TranslatedRegionBox extends StatelessWidget {
 /// are available — with one tap to the full translation text, where every line
 /// is present in reading order.
 class TranslatedOverflowNotice extends StatelessWidget {
-  const TranslatedOverflowNotice({super.key, required this.count, this.onTap});
+  const TranslatedOverflowNotice({
+    super.key,
+    required this.count,
+    this.shortened = 0,
+    this.onTap,
+  });
 
   /// Number of translated regions that had no legible place on the image.
   final int count;
+
+  /// Regions that were drawn but cut short to fit, so part of what they say is
+  /// only in the full translation.
+  final int shortened;
 
   /// Opens the full translation. `null` renders a non-interactive label.
   final VoidCallback? onTap;
@@ -420,9 +431,17 @@ class TranslatedOverflowNotice extends StatelessWidget {
     // "Translation", not "line": since whole-page translation works on
     // paragraphs, a count of lines would be wrong — and it is the translations
     // that are one tap away.
-    final label = count == 1
-        ? '1 more translation available'
-        : '$count more translations available';
+    final parts = <String>[
+      if (count == 1)
+        '1 more translation'
+      else if (count > 1)
+        '$count more translations',
+      if (shortened == 1)
+        '1 shortened'
+      else if (shortened > 1)
+        '$shortened shortened',
+    ];
+    final label = [parts.join(' · '), if (count > 0) 'available'].join(' ');
 
     final body = Material(
       // A compact Lens-style chip rather than a raised card: flat, hairline-edged
@@ -431,7 +450,7 @@ class TranslatedOverflowNotice extends StatelessWidget {
       color: scheme.surface.withValues(alpha: 0.96),
       elevation: 0,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(TranslatedBlockPill.radius),
+        borderRadius: BorderRadius.circular(_noticeRadius),
         side: BorderSide(
           color: scheme.outlineVariant.withValues(alpha: 0.5),
           width: 0.5,

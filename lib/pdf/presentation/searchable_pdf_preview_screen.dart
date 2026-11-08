@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -56,6 +57,7 @@ class SearchablePdfPreviewScreen extends StatefulWidget {
     this.convert,
     this.surface,
     this.onConverted,
+    this.autoConvert = false,
   });
 
   /// Absolute path of the selected PDF.
@@ -79,6 +81,11 @@ class SearchablePdfPreviewScreen extends StatefulWidget {
   /// before deciding whether to save it. Tests inject a no-op so the success
   /// state can be inspected on its own.
   final void Function(BuildContext context, CreatedPdf pdf)? onConverted;
+
+  /// Starts the conversion as soon as the screen and its converter are ready.
+  /// Used by the direct Import PDF → convert flow, where choosing the file is
+  /// the only decision the user came to make.
+  final bool autoConvert;
 
   @override
   State<SearchablePdfPreviewScreen> createState() =>
@@ -116,21 +123,32 @@ class _SearchablePdfPreviewScreenState
     _readFileSize();
   }
 
+  bool _autoStarted = false;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_run != null) return;
-    if (widget.convert != null) {
-      _run = widget.convert;
-      return;
+    if (_run == null) {
+      if (widget.convert != null) {
+        _run = widget.convert;
+      } else {
+        _converter ??=
+            widget.converter ??
+            SearchablePdfConverter(
+              renderer: PdfxPageRenderer(),
+              ocr: AppScope.of(context).ocrService,
+            );
+        _run = _converter!.convert;
+      }
     }
-    _converter ??=
-        widget.converter ??
-        SearchablePdfConverter(
-          renderer: PdfxPageRenderer(),
-          ocr: AppScope.of(context).ocrService,
-        );
-    _run = _converter!.convert;
+    if (widget.autoConvert && !_autoStarted && _run != null) {
+      _autoStarted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _run != null && !_busy && _result == null) {
+          unawaited(_convert());
+        }
+      });
+    }
   }
 
   void _onLoaded(int count) {
@@ -204,8 +222,9 @@ class _SearchablePdfPreviewScreenState
     } catch (_) {
       if (!mounted) return;
       setState(
-        () =>
-            _error = 'This PDF could not be made searchable. Please try again.',
+        () => _error =
+            'This PDF could not be converted. Please check the file and '
+            'try again.',
       );
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -244,10 +263,7 @@ class _SearchablePdfPreviewScreenState
     return Scaffold(
       backgroundColor: AppColors.page,
       appBar: AppBar(
-        // "Preview", not the action's name: the button already says what the
-        // screen is for, and a title that repeated it made the header read as
-        // two identical commands.
-        title: const Text('Preview'),
+        title: const Text('Make PDF Searchable'),
         backgroundColor: AppColors.page,
         surfaceTintColor: Colors.transparent,
       ),
@@ -483,11 +499,11 @@ class _ActionBar extends StatelessWidget {
                       borderRadius: BorderRadius.circular(14),
                     ),
                   ),
-                  child: const Text('Make Searchable PDF'),
+                  child: const Text('Make PDF Searchable'),
                 ),
                 const SizedBox(height: AppSpacing.sm),
                 Text(
-                  'Adds an invisible text layer · recognised on this device',
+                  'Adds a searchable text layer · processed on this device',
                   textAlign: TextAlign.center,
                   style: style.bodySmall?.copyWith(color: AppColors.muted),
                 ),
@@ -601,7 +617,7 @@ class _SuccessView extends StatelessWidget {
             ),
             const SizedBox(height: AppSpacing.xl),
             Text(
-              'Searchable PDF ready',
+              'Your PDF is searchable',
               textAlign: TextAlign.center,
               style: theme.textTheme.titleLarge?.copyWith(
                 color: AppColors.ink,

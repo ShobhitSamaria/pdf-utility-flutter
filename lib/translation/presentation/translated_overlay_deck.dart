@@ -12,6 +12,8 @@ class TranslatedDeckItem {
     required this.id,
     required this.text,
     required this.sourceRect,
+    this.isParagraph = false,
+    this.sourceLines = 1,
   });
 
   /// Identity of the translated region this came from.
@@ -23,8 +25,35 @@ class TranslatedDeckItem {
   /// The OCR box it replaces, in screen (logical-pixel) space.
   final Rect sourceRect;
 
+  /// How many printed source lines [sourceRect] covers.
+  ///
+  /// The deck sizes a translation like the text it replaces, and for that it
+  /// needs the height of **one** printed line, not the whole block: a 200 px
+  /// newspaper paragraph of twelve lines and a 9 px label field both have to be
+  /// set at their own line height. One line is the honest default for a caller
+  /// that only has a single line's box.
+  final int sourceLines;
+
+  /// Whether this region is a **paragraph** rather than a single line.
+  ///
+  /// A paragraph is placed differently, and deliberately so: its own source box
+  /// is already the region it occupies, so its translation is fitted *into that
+  /// box* (the largest legible size that fits, like Lens) instead of being
+  /// flowed into a slice of the page. Two consequences matter:
+  ///
+  /// * paragraphs cannot swallow each other — each one owns a rectangle the OCR
+  ///   layer guarantees is disjoint from every other paragraph's;
+  /// * a full-width heading can no longer be "the same column" as all three
+  ///   columns beneath it. That is exactly what used to happen: the headline and
+  ///   the whole middle column became one block, the block had room for two of
+  ///   its five units, and the middle column was reported as "3 more
+  ///   translations available" instead of being translated at all.
+  final bool isParagraph;
+
   @override
-  String toString() => 'TranslatedDeckItem($id, $sourceRect, "$text")';
+  String toString() =>
+      'TranslatedDeckItem($id, $sourceRect, '
+      '${isParagraph ? 'paragraph' : 'line'}, "$text")';
 }
 
 /// Where one region's translated text was finally drawn.
@@ -151,6 +180,7 @@ class TranslatedDeckLayout {
   const TranslatedDeckLayout({
     required this.blocks,
     required this.hiddenRegionIds,
+    this.shortenedRegionIds = const <int>[],
   });
 
   /// Blocks to paint, in reading order.
@@ -159,6 +189,21 @@ class TranslatedDeckLayout {
   /// Every input region with text that is not painted anywhere on the image,
   /// whether it was hidden inside a block or dropped before placement.
   final List<int> hiddenRegionIds;
+
+  /// Regions that **are** drawn, but whose text did not fit its box at the
+  /// smallest legible size, so the visible text ends in an ellipsis.
+  ///
+  /// This is the honest middle case between "placed" and "hidden": the
+  /// translation is on the page, yet part of it is not readable there. It is
+  /// reported rather than swallowed, so the overlay can tell the reader where
+  /// the rest of it is instead of looking complete.
+  final List<int> shortenedRegionIds;
+
+  /// Whether anything on this page needs pointing at the full translation —
+  /// either because a region had no room at all or because its text had to be
+  /// cut short to fit.
+  bool get hasOverflow =>
+      hiddenRegionIds.isNotEmpty || shortenedRegionIds.isNotEmpty;
 
   /// Whether every region reached the image.
   bool get isComplete => hiddenRegionIds.isEmpty;
@@ -340,16 +385,26 @@ abstract final class TranslatedOverlayDeck {
 
     // Anything undrawable is dropped *before* grouping, so a blank region never
     // splits a paragraph in two.
+    //
+    // "Undrawable" also covers a region that holds nothing but punctuation. A
+    // stray `।` or `.` that the recognizer isolated on its own — a danda at a
+    // line end, a page-edge mark — has no translation to show, and painting an
+    // otherwise empty pill over the paper merely hides clean paper with a dot.
+    // The region and its text are *not* lost: they stay in the translation model
+    // and therefore in the full-text view. Only the photo skips drawing it, and
+    // it is not reported as missing (nothing was dropped from the reading).
     final usable = <TranslatedDeckItem>[
       for (final item in items)
-        if (!item.sourceRect.isEmpty && item.text.trim().isNotEmpty) item,
+        if (!item.sourceRect.isEmpty && _carriesWords(item.text)) item,
     ];
     if (usable.isEmpty) {
+      // Nothing readable anywhere on the page, so there is nothing to report as
+      // missing either — only regions that carry words count as lost.
       return TranslatedDeckLayout(
         blocks: const <TranslatedBlockPlacement>[],
         hiddenRegionIds: [
           for (final item in items)
-            if (item.text.trim().isNotEmpty) item.id,
+            if (_carriesWords(item.text)) item.id,
         ],
       );
     }
@@ -372,7 +427,7 @@ abstract final class TranslatedOverlayDeck {
       imageRect: pageRect,
       minWidth: minWidth,
     );
-    final groups = _group(ordered, gap: gap);
+    final groups = _groups(ordered, gap: gap);
     final groupSpans = <_Span>[
       for (final group in groups)
         _Span.union([for (final item in group) spans[item.id]!]),
@@ -388,6 +443,49 @@ abstract final class TranslatedOverlayDeck {
       final group = groups[index];
       final span = groupSpans[index];
       if (group.isEmpty) continue;
+
+      // The font ceiling for this block. The page-wide ceiling says "no larger
+      // than body type"; a paragraph then lowers it to the height of *one*
+      // printed source line, because a translation taller than the line it
+      // replaces cannot stay inside its row — that is how a label field ended
+      // up in 17 px type inside a 9 px row, painted across the fields below.
+      final blockCeiling = _ceilingFor(
+        group.length == 1 ? group.single : null,
+        minSize: minSize,
+        maxSize: maxSize,
+        pageCeiling: maxSizeCeiling,
+      );
+
+      // A paragraph owns its own rectangle, so it is placed there rather than
+      // flowed: see [_placeParagraph].
+      if (group.length == 1 && group.single.isParagraph) {
+        final paragraph = _placeParagraph(
+          item: group.single,
+          span: span,
+          groups: groups,
+          groupSpans: groupSpans,
+          anchors: anchors,
+          index: index,
+          pageRect: pageRect,
+          placed: placed,
+          style: style,
+          textScaler: textScaler,
+          textDirection: textDirection,
+          minSize: minSize,
+          maxSize: maxSize,
+          minWidth: minWidth,
+          lineCap: lineCap,
+          maxSizeCeiling: blockCeiling,
+          gap: gap,
+        );
+        if (paragraph != null) {
+          placed.add(paragraph.box);
+          blocks.add(paragraph);
+          continue;
+        }
+        // A box too small for even one legible line falls through to the flow,
+        // which is the last resort that tries to find room elsewhere.
+      }
 
       // Rule 3a: no block is drawn over one that is already on the page. This
       // compares *rendered* spans, which is the whole point: an OCR box and the
@@ -442,7 +540,7 @@ abstract final class TranslatedOverlayDeck {
         lineSpacing: lineSpacing,
         scale: 1,
         budget: _Budget.natural,
-        maxSizeCeiling: maxSizeCeiling,
+        maxSizeCeiling: blockCeiling,
       );
 
       final complete =
@@ -463,7 +561,7 @@ abstract final class TranslatedOverlayDeck {
           anchor: top,
           room: room,
           lineSpacing: lineSpacing,
-          maxSizeCeiling: maxSizeCeiling,
+          maxSizeCeiling: blockCeiling,
         );
 
         if (shrunk != null) {
@@ -490,7 +588,7 @@ abstract final class TranslatedOverlayDeck {
                   scale: 1,
                   budget: _Budget.fixed,
                   fixedBudget: share,
-                  maxSizeCeiling: maxSizeCeiling,
+                  maxSizeCeiling: blockCeiling,
                 )
               : null;
           // Rule 6: the tail is left undrawn rather than squeezed into a box
@@ -513,7 +611,7 @@ abstract final class TranslatedOverlayDeck {
                   lineSpacing: lineSpacing,
                   scale: minBlockScale,
                   budget: _Budget.remaining,
-                  maxSizeCeiling: maxSizeCeiling,
+                  maxSizeCeiling: blockCeiling,
                 );
         }
       }
@@ -556,8 +654,172 @@ abstract final class TranslatedOverlayDeck {
       blocks: blocks,
       hiddenRegionIds: [
         for (final item in items)
-          if (item.text.trim().isNotEmpty && !drawn.contains(item.id)) item.id,
+          if (_carriesWords(item.text) && !drawn.contains(item.id)) item.id,
       ],
+      // Drawn, but not in full: the fitter had to ellipsize. Reported so no page
+      // ever shows a translation that is quietly missing its own ending.
+      shortenedRegionIds: <int>[
+        for (final block in blocks)
+          for (final line in block.lines)
+            if (line.layout.ellipsized) line.id,
+      ],
+    );
+  }
+
+  /// Places one **paragraph** inside the rectangle it came from.
+  ///
+  /// A paragraph's source box is the region it occupies on the page, so the
+  /// honest answer is Lens's: fit the translation into that box at the largest
+  /// size that still holds all of it. That keeps three properties at once, none
+  /// of which the flow could give:
+  ///
+  /// * **nothing is hidden** — the OCR layer guarantees paragraph boxes are
+  ///   disjoint, so a paragraph never has to compete with another for room;
+  /// * **nothing is misplaced** — the translation stays on the region (and in the
+  ///   column) it came from instead of being pushed down the page by whatever
+  ///   was translated above it;
+  /// * **no ghosting** — the box is the source rectangle, so the veil covers the
+  ///   Hindi it replaces exactly.
+  ///
+  /// It may grow by up to [maxNaturalGrowth] when the room below allows, because
+  /// a short region (a deck line, a caption) holds a translation one line taller
+  /// than itself; unrestricted growth is what once let a cell's translation run
+  /// to the bottom of the page.
+  ///
+  /// Returns `null` when not even one legible line fits, so the caller can fall
+  /// back to the flow rather than dropping the text.
+  static TranslatedBlockPlacement? _placeParagraph({
+    required TranslatedDeckItem item,
+    required _Span span,
+    required List<List<TranslatedDeckItem>> groups,
+    required List<_Span> groupSpans,
+    required List<double> anchors,
+    required int index,
+    required Rect pageRect,
+    required List<Rect> placed,
+    required TextStyle style,
+    required TextScaler textScaler,
+    required TextDirection textDirection,
+    required double minSize,
+    required double maxSize,
+    required double minWidth,
+    required int lineCap,
+    double? maxSizeCeiling,
+    double gap = gap,
+  }) {
+    final source = item.sourceRect;
+    var top = source.top
+        .clamp(pageRect.top, math.max(pageRect.top, pageRect.bottom - 1))
+        .toDouble();
+
+    // A paragraph never starts on top of a block that is already drawn.
+    //
+    // Neighbouring translations can grow a few pixels past their own source box
+    // (an English line is often taller than the source line it replaces). When
+    // that happens the next paragraph's *source* still starts high enough to be
+    // under the grown box, and placing it at its source top painted one
+    // paragraph's text straight over the previous one — the overlapping
+    // "SKU …" / "Invoice No …" pair on a real shipping label. Starting below the
+    // drawn box instead keeps the page free of text-on-text; if that leaves no
+    // room, the paragraph is reported as hidden rather than drawn in the wrong
+    // place.
+    for (final box in placed) {
+      if (!span.overlapsRect(box)) continue;
+      if (box.bottom + gap > top) top = box.bottom + gap;
+    }
+    if (top >= pageRect.bottom - minBoxHeight) return null;
+
+    // Room ends where the next thing on this page that shares the paragraph's
+    // columns begins, whichever of the two is nearest: a block already drawn, or
+    // a later block still waiting. `gap` is *not* subtracted — the two boxes meet
+    // at that edge without overlapping, and a deck line needs the pixel.
+    var limit = pageRect.bottom;
+    for (final box in placed) {
+      if (!span.overlapsRect(box)) continue;
+      if (box.top >= top && box.top < limit) limit = box.top;
+    }
+    for (var other = index + 1; other < groups.length; other++) {
+      if (!span.overlaps(groupSpans[other])) continue;
+      final candidate = math.max(anchors[other], top);
+      if (candidate < limit) limit = candidate;
+    }
+    final room = (limit - top).toDouble();
+    if (room <= 0) return null;
+
+    final insetY = TranslatedTextLayout.insetYFor(source.height);
+
+    /// Fits the paragraph inside [height], which is always room this block owns:
+    /// it stops at the next region that shares its columns, so growing into it
+    /// cannot cover another translation or another line of the page.
+    TranslatedTextLayout fitInto(double height) => TranslatedTextLayout.fit(
+      text: item.text,
+      sourceRect: source,
+      imageRect: pageRect,
+      style: style,
+      textScaler: textScaler,
+      textDirection: textDirection,
+      minSize: minSize,
+      maxSize: maxSize,
+      minWidth: minWidth,
+      heightGrowth: math.max(maxNaturalGrowth, height / source.height),
+      lineCap: lineCap,
+      top: top,
+      maxHeight: height,
+      span: (left: span.left, width: span.width),
+      maxSizeCeiling: maxSizeCeiling,
+    );
+
+    // Growth is allowed up to the same modest factor the flow uses, and never
+    // past the room this paragraph owns.
+    var layout = fitInto(
+      math.min(room, source.height * maxNaturalGrowth + insetY * 2),
+    );
+
+    // A translation can be one line longer than the row it replaces — English
+    // runs 20–40 % longer than the Hindi it came from — and then the modest
+    // growth above is not enough even at the smallest legible size. Clipping it
+    // is not an option, so the region **expands into the free space it already
+    // owns** (`room`) and only the font search decides the size: the same
+    // paragraph, the same column, a slightly taller box. Nothing else can be
+    // underneath, because `room` ends where the next region's source begins and
+    // where every already-drawn box stops.
+    var expanded = false;
+    if ((layout.ellipsized || !layout.paintText) && room > layout.box.height) {
+      final taller = fitInto(room);
+      if (taller.paintText &&
+          (!taller.ellipsized ||
+              taller.style.fontSize! > layout.style.fontSize!)) {
+        layout = taller;
+        expanded = taller.box.height - source.height > 0.5;
+      }
+    }
+    if (!layout.paintText || layout.box.isEmpty) return null;
+
+    return TranslatedBlockPlacement(
+      id: item.id,
+      lines: <TranslatedDeckPlacement>[
+        TranslatedDeckPlacement(
+          id: item.id,
+          text: item.text,
+          sourceRect: source,
+          layout: layout,
+          box: layout.box,
+          // A paragraph that kept its own box at its own size is not
+          // constrained; one that had to shrink or grow is.
+          constrained:
+              layout.shrunk ||
+              expanded ||
+              (layout.box.height - source.height).abs() > 0.5,
+        ),
+      ],
+      box: layout.box,
+      // The veil covers the paragraph's own source and its translation, and
+      // stops at the next paragraph's source: growing over the line below would
+      // hide a line whose own translation is drawn further down.
+      coverage: _unionOf(<Rect>[layout.box, source]).intersect(
+        Rect.fromLTRB(pageRect.left, pageRect.top, pageRect.right, limit),
+      ),
+      constrained: layout.shrunk || layout.ellipsized,
     );
   }
 
@@ -958,6 +1220,31 @@ abstract final class TranslatedOverlayDeck {
   /// A region joins the most recent block it shares columns with and sits within
   /// a line of, else it opens a new block. Scanning backwards is what lets two
   /// columns interleave in reading order and still end up as one block each.
+  /// Paragraphs are their own blocks; only line-scale regions are grouped.
+  static List<List<TranslatedDeckItem>> _groups(
+    List<TranslatedDeckItem> ordered, {
+    required double gap,
+  }) {
+    final groups = <List<TranslatedDeckItem>>[];
+    var run = <TranslatedDeckItem>[];
+    void flush() {
+      if (run.isEmpty) return;
+      groups.addAll(_group(run, gap: gap));
+      run = <TranslatedDeckItem>[];
+    }
+
+    for (final item in ordered) {
+      if (item.isParagraph) {
+        flush();
+        groups.add(<TranslatedDeckItem>[item]);
+        continue;
+      }
+      run.add(item);
+    }
+    flush();
+    return groups;
+  }
+
   static List<List<TranslatedDeckItem>> _group(
     List<TranslatedDeckItem> ordered, {
     required double gap,
@@ -1021,6 +1308,52 @@ abstract final class TranslatedOverlayDeck {
     if (byLeft != 0) return byLeft;
     return a.id.compareTo(b.id);
   }
+
+  /// The largest font, in logical pixels, a block may be set in.
+  ///
+  /// Two limits, whichever is smaller:
+  ///
+  /// * [pageCeiling] — the caller's page-wide ceiling (body size on a page of
+  ///   paragraph units), or the region-derived ceiling for a line page;
+  /// * the height of **one printed source line** of the block.
+  ///
+  /// The second limit is what makes translated text fit the line it replaces.
+  /// Lens sets a translated line at roughly the height of the original line;
+  /// this deck used to give every paragraph the flat body size, so a shipping
+  /// label's 9 px field row was set in 17 px Devanagari, and the glyphs spilled
+  /// over the field below. The block's own box is no guide on its own — a
+  /// paragraph box is tall because it holds many lines — which is why the OCR
+  /// layer passes the line count down as [TranslatedDeckItem.sourceLines].
+  ///
+  /// A null [item] (a multi-item block, which only the line flow produces) keeps
+  /// the page ceiling untouched.
+  static double _ceilingFor(
+    TranslatedDeckItem? item, {
+    required double minSize,
+    required double maxSize,
+    double? pageCeiling,
+  }) {
+    final page =
+        pageCeiling ??
+        TranslatedTextLayout.effectiveMaxSize(
+          sourceHeight: item?.sourceRect.height ?? 0,
+          maxSize: maxSize,
+        );
+    if (item == null || !item.isParagraph) return page;
+    final perLine = item.sourceRect.height / math.max(1, item.sourceLines);
+    return math.min(page, math.max(minSize, perLine));
+  }
+
+  /// Whether [text] contains at least one letter or digit in any script.
+  ///
+  /// This is the test for "is there anything to read here": `।`, `॥`, `.`, `-`
+  /// and `*` all fail it, while `7` and `अ` pass. It deliberately does not try
+  /// to identify a language or a script — Devanagari, Tamil, Latin and Arabic
+  /// digits are all matched by the same Unicode categories, so no page has to be
+  /// special-cased.
+  static bool _carriesWords(String text) => _wordCharacter.hasMatch(text);
+
+  static final RegExp _wordCharacter = RegExp(r'[\p{L}\p{N}]', unicode: true);
 
   /// Smallest rectangle containing every box.
   static Rect _unionOf(List<Rect> boxes) {

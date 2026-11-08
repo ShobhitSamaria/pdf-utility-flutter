@@ -87,7 +87,7 @@ class _SearchablePdfScreenState extends State<SearchablePdfScreen> {
     return Scaffold(
       backgroundColor: AppColors.page,
       appBar: AppBar(
-        title: const Text('Make Searchable PDF'),
+        title: const Text('Make PDF Searchable'),
         backgroundColor: AppColors.page,
         surfaceTintColor: Colors.transparent,
       ),

@@ -35,6 +35,7 @@ class TranslationUnit {
     required this.text,
     required this.bounds,
     required this.kind,
+    this.sourceLines = 1,
   });
 
   /// Stable identifier, unique within one batch, preserving reading order.
@@ -51,6 +52,15 @@ class TranslationUnit {
 
   final TranslatedRegionKind kind;
 
+  /// How many printed lines of the source this unit covers.
+  ///
+  /// [bounds] is the whole paragraph, so its height alone cannot say how tall
+  /// one printed line is — a 200 px block is two large lines or fifteen small
+  /// ones. The overlay needs that number to size the translation like the text
+  /// it replaces (see `TranslatedOverlayDeck`), and the OCR layer is the only
+  /// place that still knows it.
+  final int sourceLines;
+
   /// Whether the geometry can actually be drawn over the photo.
   bool get hasGeometry => !bounds.isEmpty;
 
@@ -59,11 +69,13 @@ class TranslationUnit {
     String? text,
     OcrRect? bounds,
     TranslatedRegionKind? kind,
+    int? sourceLines,
   }) => TranslationUnit(
     id: id ?? this.id,
     text: text ?? this.text,
     bounds: bounds ?? this.bounds,
     kind: kind ?? this.kind,
+    sourceLines: sourceLines ?? this.sourceLines,
   );
 
   @override
@@ -95,6 +107,7 @@ class TranslatedRegion {
     required this.translatedText,
     required this.bounds,
     required this.kind,
+    this.sourceLines = 1,
   });
 
   final int id;
@@ -102,6 +115,9 @@ class TranslatedRegion {
   final String translatedText;
   final OcrRect bounds;
   final TranslatedRegionKind kind;
+
+  /// Printed source lines covered by [bounds]; see [TranslationUnit.sourceLines].
+  final int sourceLines;
 
   /// Whether this region can be painted over the photo: it needs both geometry
   /// and actual translated text (engines can return whitespace for a region).

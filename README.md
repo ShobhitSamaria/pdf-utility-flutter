@@ -1,4 +1,6 @@
-# PDF Utility
+# OCR PDF Studio
+
+**Scan. Extract. Convert.**
 
 An Android app that turns a photo or an imported PDF page into selectable,
 copyable text, and translates that text **on the device** — including a

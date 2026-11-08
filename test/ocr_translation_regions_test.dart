@@ -93,6 +93,20 @@ void main() {
       expect(units[1].text, 'Third line');
     });
 
+    test('carries how many printed lines each unit covers', () {
+      // The overlay sizes a translation like the text it replaces, which needs
+      // the height of one printed line — not the paragraph block's height.
+      final units = OcrTranslationRegions.fromPage(result);
+      // Two content lines in the first paragraph, one in the second — the blank
+      // line between them adds no printed text and so does not count.
+      expect(units.first.sourceLines, 2);
+      expect(units.last.sourceLines, 1);
+      // A paragraph's text is joined into one string, so its line count cannot
+      // be recovered from the text — which is exactly why it is carried here.
+      expect(units[0].text.contains('\n'), isFalse);
+      expect(units.first.sourceLines, greaterThan(1));
+    });
+
     test('keeps each paragraph\'s union box in source-image space', () {
       final units = OcrTranslationRegions.fromPage(result);
       expect(units[0].bounds, OcrRect.fromLTRB(10, 10, 200, 60));

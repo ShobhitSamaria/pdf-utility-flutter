@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -14,7 +15,6 @@ import '../ocr/domain/ocr_result_index.dart';
 import '../ocr/domain/ocr_script_mode.dart';
 import '../ocr/domain/ocr_selection.dart';
 import '../ocr/presentation/ocr_failure_notice.dart';
-import '../ocr/domain/ocr_capabilities.dart';
 import '../ocr/presentation/widgets/ocr_overlay.dart';
 import '../translation/domain/translated_region.dart';
 import '../translation/domain/translation_language.dart';
@@ -524,7 +524,7 @@ class _OcrResultScreenState extends State<OcrResultScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('OCR Result'),
+        title: const Text('Scan result'),
         actions: [
           IconButton(
             tooltip: _searchOpen ? 'Close search' : 'Find in text',
@@ -550,12 +550,13 @@ class _OcrResultScreenState extends State<OcrResultScreen> {
               onSelected: (selected) => unawaited(_rerunAs(selected)),
             ),
           ),
-          IconButton(
-            tooltip: 'Toggle OCR geometry (debug)',
-            onPressed: () =>
-                scope.debugGeometry.value = !scope.debugGeometry.value,
-            icon: const Icon(Icons.grid_on_outlined),
-          ),
+          if (kDebugMode)
+            IconButton(
+              tooltip: 'Toggle OCR geometry (debug)',
+              onPressed: () =>
+                  scope.debugGeometry.value = !scope.debugGeometry.value,
+              icon: const Icon(Icons.grid_on_outlined),
+            ),
         ],
       ),
       // One surface, one reading: the photo. Translation and the readable text
@@ -886,15 +887,13 @@ class _EmptyResultNotice extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              'The image was read, but no words came back. That usually means '
-              'the photo is blurred, tilted or dark — or the text is in a '
-              'script that was not selected. This build reads '
-              '${OcrCapabilities.bundledLabel} text from photos.',
+              'We couldn\u2019t find any text in this image. Try a sharper, '
+              'well-lit photo, or choose another script below.',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 10),
             Text(
-              'Tried: ${triedMode.label}',
+              'Script tried: ${triedMode.label}',
               style: theme.textTheme.labelSmall,
             ),
             const SizedBox(height: 4),
@@ -998,10 +997,12 @@ class _RegionTranslationSheet extends StatelessWidget {
             const SizedBox(height: 20),
             Row(
               children: [
-                FilledButton.icon(
-                  onPressed: onCopy,
-                  icon: const Icon(Icons.copy_all_outlined),
-                  label: const Text('Copy translation'),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: onCopy,
+                    icon: const Icon(Icons.copy_all_outlined),
+                    label: const Text('Copy translation'),
+                  ),
                 ),
                 const SizedBox(width: 8),
                 TextButton(

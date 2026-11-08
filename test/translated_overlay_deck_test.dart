@@ -13,6 +13,15 @@ const short = 'नमस्ते दुनिया';
 const long =
     'यह एक बहुत लंबा अनुवाद है जिसे अपनी पंक्ति के भीतर ही समायोजित करना है';
 
+/// A paragraph-sized region: the unit whole-page translation produces.
+TranslatedDeckItem paragraph(int id, String text, Rect source) =>
+    TranslatedDeckItem(
+      id: id,
+      text: text,
+      sourceRect: source,
+      isParagraph: true,
+    );
+
 void main() {
   // TextPainter needs the binding (and its fixed-width test font, which makes
   // every measurement below deterministic).
@@ -173,6 +182,49 @@ void main() {
       ]);
 
       expect(placements.map((p) => p.id), [2]);
+    });
+
+    test('a punctuation-only region is not painted on the photo', () {
+      // Real OCR does this: a danda at the end of a line, a page-edge mark, a
+      // stray full stop become their own region. They have nothing to translate,
+      // so drawing them would only put an empty pill holding "." over clean
+      // paper. The text itself is untouched — this test only asserts the photo
+      // skips it.
+      final layout = TranslatedOverlayDeck.layout(
+        items: [
+          item(0, '.', const Rect.fromLTWH(100, 100, 40, 24)),
+          item(1, '॥', const Rect.fromLTWH(100, 140, 24, 40)),
+          item(2, short, const Rect.fromLTWH(100, 300, 300, 24)),
+        ],
+        imageRect: image,
+        style: style,
+      );
+
+      expect(layout.blocks.map((block) => block.id), [2]);
+      // Not drawn, but also not reported as "did not fit": nothing readable was
+      // ever there to lose.
+      expect(layout.hiddenRegionIds, isEmpty);
+      expect(layout.shortenedRegionIds, isEmpty);
+      expect(layout.isComplete, isTrue);
+    });
+
+    test('letters and digits in any script are still drawn', () {
+      // The rule must not start eating real content: a one-character Hindi word,
+      // a bare page number and a Latin heading all carry a letter or a digit.
+      final layout = TranslatedOverlayDeck.layout(
+        items: [
+          item(0, '७', const Rect.fromLTWH(100, 100, 40, 24)),
+          item(1, '7', const Rect.fromLTWH(100, 200, 40, 24)),
+          item(2, 'क', const Rect.fromLTWH(100, 300, 40, 24)),
+          item(3, 'A', const Rect.fromLTWH(100, 400, 40, 24)),
+          item(4, 'த', const Rect.fromLTWH(100, 500, 40, 24)),
+        ],
+        imageRect: image,
+        style: style,
+      );
+
+      expect(layout.blocks.map((block) => block.id), [0, 1, 2, 3, 4]);
+      expect(layout.hiddenRegionIds, isEmpty);
     });
   });
 
@@ -449,6 +501,94 @@ void main() {
       expectInside(placements);
     });
 
+    test('a paragraph is never set larger than one of its printed lines', () {
+      // The shipping-label defect: a one-row field 12 px tall was given the
+      // page's flat body ceiling (17 px), so the Devanagari spilled out of its
+      // row and painted over the fields below it. The ceiling now follows the
+      // height of a single source line.
+      final label = TranslatedOverlayDeck.layout(
+        items: [
+          TranslatedDeckItem(
+            id: 0,
+            text: short,
+            sourceRect: const Rect.fromLTWH(100, 100, 180, 12),
+            isParagraph: true,
+            sourceLines: 1,
+          ),
+        ],
+        imageRect: image,
+        style: style,
+        maxSizeCeiling: TranslatedTextLayout.defaultMaxSize,
+      );
+
+      final block = label.blocks.single;
+      expect(block.lines.single.layout.style.fontSize, lessThanOrEqualTo(12));
+      expect(
+        block.box.height,
+        lessThanOrEqualTo(12 + TranslatedTextLayout.maxVerticalPadding * 2),
+        reason: 'the translation must stay inside the row it replaces',
+      );
+    });
+
+    test('a tall paragraph keeps body size, not its own block height', () {
+      // The opposite mistake: deriving the font from a paragraph's block height
+      // gives a twelve-line column heading-sized text. Twelve lines of a 240 px
+      // block are 20 px each, which is ordinary body type.
+      final page = TranslatedOverlayDeck.layout(
+        items: [
+          TranslatedDeckItem(
+            id: 0,
+            text: long,
+            sourceRect: const Rect.fromLTWH(40, 60, 300, 240),
+            isParagraph: true,
+            sourceLines: 12,
+          ),
+        ],
+        imageRect: image,
+        style: style,
+        maxSizeCeiling: TranslatedTextLayout.defaultMaxSize,
+      );
+
+      expect(
+        page.blocks.single.lines.single.layout.style.fontSize,
+        lessThanOrEqualTo(TranslatedTextLayout.defaultMaxSize),
+      );
+    });
+
+    test('stacked label rows never paint over each other', () {
+      // Ten adjacent fields, each one line tall and 24 px apart — the geometry
+      // of a shipping label. Before the per-line ceiling, the first row's 17 px
+      // text grew down over the next four fields.
+      final rows = <TranslatedDeckItem>[
+        for (var i = 0; i < 10; i++)
+          TranslatedDeckItem(
+            id: i,
+            text: short,
+            sourceRect: Rect.fromLTWH(40, 60 + i * 24.0, 200, 18),
+            isParagraph: true,
+            sourceLines: 1,
+          ),
+      ];
+
+      final label = TranslatedOverlayDeck.layout(
+        items: rows,
+        imageRect: image,
+        style: style,
+        maxSizeCeiling: TranslatedTextLayout.defaultMaxSize,
+      );
+
+      final boxes = [for (final block in label.blocks) block.box];
+      for (var i = 0; i < boxes.length; i++) {
+        for (var j = i + 1; j < boxes.length; j++) {
+          expect(
+            boxes[i].overlaps(boxes[j]),
+            isFalse,
+            reason: 'row $i and row $j paint over each other',
+          );
+        }
+      }
+    });
+
     test('regions in reverse order come back in reading order', () {
       const first = Rect.fromLTWH(100, 100, 300, 24);
       const second = Rect.fromLTWH(100, 200, 300, 24);
@@ -487,6 +627,121 @@ void main() {
 
       expectNoOverlap(placements);
       expectInside(placements);
+    });
+  });
+
+  group('paragraph units on a three-column page', () {
+    // The geometry that produced the "middle column is not translated" report:
+    // a page-wide headline above three columns, two of them split into a first
+    // paragraph and a body paragraph. Column x-ranges are the real page's, scaled
+    // to this 1000 px test page.
+    const headline = Rect.fromLTRB(50, 90, 950, 170);
+    const deckLine = Rect.fromLTRB(50, 60, 950, 80);
+    const col1Heading = Rect.fromLTRB(40, 190, 340, 230);
+    const col1Body = Rect.fromLTRB(40, 240, 340, 600);
+    const col2First = Rect.fromLTRB(360, 190, 660, 320);
+    const col2Body = Rect.fromLTRB(360, 330, 660, 600);
+    const col3Body = Rect.fromLTRB(680, 190, 960, 600);
+
+    List<TranslatedDeckItem> page() => [
+      paragraph(
+        0,
+        'Daily Jaipur 28-08-2025',
+        const Rect.fromLTRB(70, 20, 760, 50),
+      ),
+      paragraph(1, long, deckLine),
+      paragraph(2, long, headline),
+      paragraph(3, short, col1Heading),
+      paragraph(4, long, col1Body),
+      paragraph(5, long, col2First),
+      paragraph(6, long, col2Body),
+      paragraph(7, long, col3Body),
+    ];
+
+    test('draws the middle column instead of reporting it as missing', () {
+      // Before this, the headline counted as "the same column" as all three
+      // columns under it, so the headline and the whole middle column became one
+      // block, the block ran out of room, and two of its regions were hidden —
+      // the overlay then said "3 more translations available" while an entire
+      // column of the newspaper stayed in Hindi.
+      final layout = TranslatedOverlayDeck.layout(
+        items: page(),
+        imageRect: image,
+        style: style,
+      );
+
+      expect(layout.hiddenRegionIds, isEmpty);
+      expect(
+        layout.drawnRegionIds,
+        containsAll(<int>[5, 6]),
+        reason: 'the middle column was not drawn',
+      );
+    });
+
+    test('keeps each column in its own column', () {
+      final layout = TranslatedOverlayDeck.layout(
+        items: page(),
+        imageRect: image,
+        style: style,
+      );
+
+      Rect boxOf(int id) =>
+          layout.lines.firstWhere((line) => line.id == id).box;
+
+      // The middle column's translation must sit over the middle column, not
+      // drift left into column 1 or right into column 3.
+      for (final id in <int>[5, 6]) {
+        final box = boxOf(id);
+        expect(box.left, greaterThanOrEqualTo(col1Body.right - 1));
+        expect(box.right, lessThanOrEqualTo(col3Body.left + 1));
+      }
+      expect(boxOf(4).right, lessThanOrEqualTo(col2First.left + 1));
+      expect(boxOf(7).left, greaterThanOrEqualTo(col2Body.right - 1));
+    });
+
+    test('keeps a paragraph on its own region and leaves no gaps to ghost', () {
+      final layout = TranslatedOverlayDeck.layout(
+        items: page(),
+        imageRect: image,
+        style: style,
+      );
+
+      expectNoOverlap(layout.lines);
+      expectInside(layout.lines);
+
+      // A paragraph's veil is its own region, so the Hindi it replaces cannot
+      // show through anywhere: this is the "ghosted Hindi under the translation"
+      // report, and it is checked by area rather than by eyeballing.
+      for (final block in layout.blocks) {
+        final source = block.lines.first.sourceRect;
+        expect(
+          block.coverage.contains(source.topLeft),
+          isTrue,
+          reason: 'block ${block.id} does not cover the top of its region',
+        );
+        expect(
+          block.coverage.contains(source.bottomRight),
+          isTrue,
+          reason: 'block ${block.id} does not cover the bottom of its region',
+        );
+      }
+    });
+
+    test('a paragraph near the bottom still gets its text', () {
+      // The last paragraph of the page has no neighbour below to borrow room
+      // from, so it must be drawn on what it owns.
+      final layout = TranslatedOverlayDeck.layout(
+        items: <TranslatedDeckItem>[
+          paragraph(0, long, const Rect.fromLTRB(40, 700, 340, 980)),
+        ],
+        imageRect: image,
+        style: style,
+      );
+
+      expect(layout.hiddenRegionIds, isEmpty);
+      expect(layout.blocks, hasLength(1));
+      expect(layout.lines.single.layout.paintText, isTrue);
+      expectInside(layout.lines);
     });
   });
 }

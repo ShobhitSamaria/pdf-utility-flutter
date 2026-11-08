@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's light page colour. Used by the launch window so there is no
+         black flash before the first Flutter frame, in either system theme. -->
+    <color name="launch_background">#FAFAFC</color>
+
+    <!-- Exact navy sampled from assets/LOGO.png. The adaptive-icon background
+         must match the logo tile, not AppColors.primary (#242A5C), so the tile
+         and the launcher field read as one surface. -->
+    <color name="ic_launcher_background">#000730</color>
+</resources>

@@ -73,12 +73,7 @@ void main() {
 
     test('an asymmetric box is mapped corner by corner', () {
       const transform = OcrOrientationTransform(DocumentOrientation(3));
-      const asymmetric = OcrRect(
-        left: 5,
-        top: 10,
-        right: 25,
-        bottom: 90,
-      );
+      const asymmetric = OcrRect(left: 5, top: 10, right: 25, bottom: 90);
 
       final result = transform.toSourceRect(
         asymmetric,
@@ -97,12 +92,7 @@ void main() {
 
     test('a portrait source rotated to landscape is handled', () {
       const transform = OcrOrientationTransform(DocumentOrientation(1));
-      const uprightBox = OcrRect(
-        left: 10,
-        top: 20,
-        right: 40,
-        bottom: 80,
-      );
+      const uprightBox = OcrRect(left: 10, top: 20, right: 40, bottom: 80);
 
       final result = transform.toSourceRect(
         uprightBox,
@@ -170,7 +160,10 @@ void main() {
     test('sourceSizeFor returns the stored size from an upright one', () {
       const transform = OcrOrientationTransform(DocumentOrientation(1));
 
-      expect(transform.sourceSizeFor(const Size(100, 200)), const Size(200, 100));
+      expect(
+        transform.sourceSizeFor(const Size(100, 200)),
+        const Size(200, 100),
+      );
       expect(
         const OcrOrientationTransform(
           DocumentOrientation.upright,

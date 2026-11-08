@@ -31,9 +31,11 @@ class OcrOrientationTransform {
   ///
   /// Applying [orientation] to the returned size gives [uprightSize] back.
   Size sourceSizeFor(Size uprightSize) => Size(
-    orientation.widthOf(uprightSize.width.round(), uprightSize.height.round())
+    orientation
+        .widthOf(uprightSize.width.round(), uprightSize.height.round())
         .toDouble(),
-    orientation.heightOf(uprightSize.width.round(), uprightSize.height.round())
+    orientation
+        .heightOf(uprightSize.width.round(), uprightSize.height.round())
         .toDouble(),
   );
 
@@ -125,15 +127,11 @@ class OcrOrientationTransform {
   ///   `(x, y) → (y, H - x)`.
   /// * 180° was `(x, y) → (W - x, H - y)`, its own inverse.
   /// * 270° was `(x, y) → (y, W - x)`, undo with `(x, y) → (W - y, x)`.
-  (double, double) _toSource(
-    double x,
-    double y,
-    double width,
-    double height,
-  ) => switch (orientation.quarterTurnsClockwise) {
-    1 => (y, height - x),
-    2 => (width - x, height - y),
-    3 => (width - y, x),
-    _ => (x, y),
-  };
+  (double, double) _toSource(double x, double y, double width, double height) =>
+      switch (orientation.quarterTurnsClockwise) {
+        1 => (y, height - x),
+        2 => (width - x, height - y),
+        3 => (width - y, x),
+        _ => (x, y),
+      };
 }

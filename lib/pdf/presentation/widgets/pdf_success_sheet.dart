@@ -173,14 +173,6 @@ class _PdfSuccessSheetState extends State<PdfSuccessSheet> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
-              if (pdf.elapsed != null) ...[
-                const SizedBox(height: 2),
-                Text(
-                  'Written in '
-                  '${(pdf.elapsed!.inMilliseconds / 1000).toStringAsFixed(1)} s',
-                  style: theme.textTheme.labelSmall,
-                ),
-              ],
               const SizedBox(height: AppSpacing.xl),
               Row(
                 children: [

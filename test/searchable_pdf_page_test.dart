@@ -99,10 +99,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      _harness(
-        pageSize: const Size(400, 300),
-        viewport: const Size(400, 300),
-      ),
+      _harness(pageSize: const Size(400, 300), viewport: const Size(400, 300)),
     );
     await tester.pump();
 
@@ -110,21 +107,22 @@ void main() {
     expect(find.byKey(_matchKey), findsNothing);
   });
 
-  testWidgets('a page with no size draws nothing rather than dividing by zero', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      _harness(
-        pageSize: Size.zero,
-        viewport: const Size(200, 200),
-        highlight: const PdfTextBounds(left: 0, top: 0, right: 1, bottom: 1),
-      ),
-    );
-    await tester.pump();
+  testWidgets(
+    'a page with no size draws nothing rather than dividing by zero',
+    (tester) async {
+      await tester.pumpWidget(
+        _harness(
+          pageSize: Size.zero,
+          viewport: const Size(200, 200),
+          highlight: const PdfTextBounds(left: 0, top: 0, right: 1, bottom: 1),
+        ),
+      );
+      await tester.pump();
 
-    expect(find.byType(Image), findsNothing);
-    expect(find.byKey(_matchKey), findsNothing);
-  });
+      expect(find.byType(Image), findsNothing);
+      expect(find.byKey(_matchKey), findsNothing);
+    },
+  );
 
   testWidgets('the highlight is painted above the page image', (tester) async {
     await tester.pumpWidget(
@@ -142,7 +140,9 @@ void main() {
     await tester.pump();
 
     final stack = tester.widget<Stack>(
-      find.ancestor(of: find.byKey(_matchKey), matching: find.byType(Stack)).first,
+      find
+          .ancestor(of: find.byKey(_matchKey), matching: find.byType(Stack))
+          .first,
     );
     expect(stack.children, hasLength(2));
     expect(stack.children.first, isA<Image>());

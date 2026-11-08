@@ -9,6 +9,7 @@ import 'package:pdf_utility_flutter/pdf/data/pdf_file_exporter.dart';
 import 'package:pdf_utility_flutter/pdf/domain/pdf_creation.dart';
 import 'package:pdf_utility_flutter/pdf/domain/pdf_exception.dart';
 import 'package:pdf_utility_flutter/pdf/domain/pdf_page_draft.dart';
+import 'package:pdf_utility_flutter/pdf/domain/pdf_size_estimate.dart';
 import 'package:pdf_utility_flutter/pdf/presentation/pdf_review_screen.dart';
 
 import 'support/pdf_test_images.dart';
@@ -23,6 +24,7 @@ class _RecordingWriter implements PdfCreationService {
 
   List<String>? paths;
   String? fileName;
+  PdfCompression? compression;
   int calls = 0;
 
   @override
@@ -33,10 +35,12 @@ class _RecordingWriter implements PdfCreationService {
     required List<String> pageImagePaths,
     String fileName = PdfCreationService.defaultFileName,
     void Function(int completed, int total)? onProgress,
+    PdfCompression compression = PdfCompression.standard,
   }) async {
     calls++;
     paths = List<String>.from(pageImagePaths);
     this.fileName = fileName;
+    this.compression = compression;
 
     final error = failure;
     if (error != null) throw error;
@@ -55,11 +59,29 @@ class _RecordingWriter implements PdfCreationService {
   }
 }
 
+/// Deterministic stand-in for the real (isolate-backed) estimator.
+///
+/// Widget tests run in fake async, so decoding image files here would never
+/// finish. The real estimator is covered by `pdf_size_estimate_test.dart`
+/// against files actually written by the writer.
+const int fakeStandardPerPage = 300 * 1024;
+const int fakeCompressPerPage = 60 * 1024;
+
+Future<int> fakeSizeEstimator({
+  required List<String> pageImagePaths,
+  required PdfCompression compression,
+}) async =>
+    pageImagePaths.length *
+    (compression == PdfCompression.standard
+        ? fakeStandardPerPage
+        : fakeCompressPerPage);
+
 void main() {
   late Directory root;
   late String pageA;
   late String pageB;
   late String pageC;
+  late String pageWide;
 
   setUp(() async {
     root = await Directory.systemTemp.createTemp('pdf_review_test');
@@ -83,6 +105,13 @@ void main() {
       height: 560,
       color: const Color(0xFF3D9BFF),
     );
+    pageWide = await writeTestPng(
+      directory: root,
+      name: 'wide.png',
+      width: 800,
+      height: 400,
+      color: const Color(0xFF3DDC84),
+    );
   });
 
   tearDown(() async {
@@ -100,23 +129,33 @@ void main() {
 
   Widget harness({
     List<PdfPageDraft> pages = const <PdfPageDraft>[],
+    String? initialFileName,
     PdfCreationService? writer,
     PdfFileExporter? exporter,
     Future<List<String>> Function()? pickImages,
     Future<List<String>> Function(BuildContext context)? capturePages,
+    PdfSizeEstimator? sizeEstimator,
   }) => MaterialApp(
     home: PdfReviewScreen(
       pages: pages,
+      initialFileName: initialFileName,
       creationService: writer ?? _RecordingWriter(),
       exporter: exporter,
       capturePages: capturePages,
       pickImages: pickImages,
+      sizeEstimator: sizeEstimator ?? fakeSizeEstimator,
     ),
   );
 
   /// Long-presses the tile holding [from] and drops it on [to], which is how
-  /// the grid reorders pages.
+  /// the list reorders pages. Callers that need both ends on screen at once use
+  /// a tall test surface.
   Future<void> dragTile(WidgetTester tester, String from, String to) async {
+    await tester.ensureVisible(find.text(from));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text(to));
+    await tester.pumpAndSettle();
+
     final start = tester.getCenter(find.text(from));
     final end = tester.getCenter(find.text(to));
 
@@ -134,6 +173,26 @@ void main() {
     matching: find.byIcon(Icons.close),
   );
 
+  /// The preview is a lazy list, so a page below the fold does not exist until
+  /// it is scrolled into view.
+  Future<void> scrollPreviewTo(WidgetTester tester, Finder finder) async {
+    await tester.scrollUntilVisible(
+      finder,
+      240,
+      scrollable: find
+          .descendant(of: find.byType(ListView), matching: find.byType(Scrollable))
+          .first,
+    );
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> tapAddButton(WidgetTester tester, String label) async {
+    final button = find.text(label);
+    await scrollPreviewTo(tester, button);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('shows every page, numbered, with the create action', (
     tester,
   ) async {
@@ -141,7 +200,9 @@ void main() {
     await tester.pump();
 
     expect(find.text('Page 1'), findsOneWidget);
+    await scrollPreviewTo(tester, find.text('Page 2'));
     expect(find.text('Page 2'), findsOneWidget);
+    await scrollPreviewTo(tester, find.text('Page 3'));
     expect(find.text('Page 3'), findsOneWidget);
     expect(find.text('3 pages'), findsOneWidget);
     expect(find.text('Create PDF (3 pages)'), findsOneWidget);
@@ -150,12 +211,14 @@ void main() {
     // name that has not been typed. Create PDF is disabled until one is.
     final field = tester.widget<TextField>(find.byType(TextField));
     expect(field.controller?.text, isEmpty);
-    expect(find.text('File name'), findsOneWidget);
-    expect(find.text('Enter file name'), findsOneWidget);
+    expect(find.text('PDF file name'), findsOneWidget);
+    expect(find.text('e.g. My Document'), findsOneWidget);
     // Readability is explicit, not inherited: dark ink on a light fill, so the
     // name is legible on Android in this theme.
     expect(field.style?.color, AppColors.ink);
     expect(field.decoration?.fillColor, AppColors.rowTint);
+    // The output format is visible before anything is typed.
+    expect(field.decoration?.suffixText, '.pdf');
     expect(find.textContaining('Will be saved as'), findsNothing);
     expect(find.text('Enter a file name to create the PDF.'), findsOneWidget);
 
@@ -163,6 +226,113 @@ void main() {
       find.widgetWithText(FilledButton, 'Create PDF (3 pages)'),
     );
     expect(create.onPressed, isNull);
+  });
+
+  testWidgets('estimate follows the pages and the compression choice', (
+    tester,
+  ) async {
+    final writer = _RecordingWriter();
+    await tester.pumpWidget(
+      harness(pages: drafts([pageA, pageB]), writer: writer),
+    );
+    await tester.pump();
+
+    final standard = PdfSizeEstimate.format(2 * fakeStandardPerPage);
+    final compressed = PdfSizeEstimate.format(2 * fakeCompressPerPage);
+    expect(find.text('~$standard'), findsOneWidget);
+    expect(find.text('~$compressed'), findsNothing);
+
+    await tester.tap(find.text('Compress'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('~$compressed'), findsOneWidget);
+
+    // Removing a page lowers the estimate again.
+    await tester.tap(deleteButtons().first);
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.text('~${PdfSizeEstimate.format(fakeCompressPerPage)}'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the chosen compression reaches the writer', (tester) async {
+    final writer = _RecordingWriter();
+    await tester.pumpWidget(
+      harness(pages: drafts([pageA]), initialFileName: 'scan', writer: writer),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('Compress'));
+    await tester.pump();
+    await tester.tap(find.text('Create PDF (1 page)'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(writer.calls, 1);
+    expect(writer.compression, PdfCompression.compress);
+  });
+
+  testWidgets('compression choices read Standard and Compress', (tester) async {
+    await tester.pumpWidget(harness(pages: drafts([pageA])));
+    await tester.pump();
+
+    expect(find.text('Standard'), findsOneWidget);
+    expect(find.text('Compress'), findsOneWidget);
+    // Standard is the default: Compress is a deliberate choice, not a surprise.
+    final segments = tester.widget<SegmentedButton<PdfCompression>>(
+      find.byType(SegmentedButton<PdfCompression>),
+    );
+    expect(segments.selected, <PdfCompression>{PdfCompression.standard});
+    // The helper describes the selected mode: quality for Standard, size for
+    // Compress. Both are one short line.
+    expect(find.text('Best quality.'), findsOneWidget);
+    await tester.tap(find.text('Compress'));
+    await tester.pump();
+    expect(
+      find.text('Reduce PDF size with slightly lower image quality.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('page previews contain the whole page, never crop it', (
+    tester,
+  ) async {
+    await tester.pumpWidget(harness(pages: drafts([pageA])));
+    await tester.pump();
+
+    final image = tester.widget<Image>(
+      find.descendant(
+        of: find.byType(PdfReviewScreen),
+        matching: find.byType(Image),
+      ),
+    );
+    expect(image.fit, BoxFit.contain);
+  });
+
+  testWidgets('portrait and landscape pages both use the available width', (
+    tester,
+  ) async {
+    for (final path in <String>[pageA, pageWide]) {
+      await tester.pumpWidget(harness(pages: drafts([path])));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final screenWidth = tester.getSize(find.byType(Scaffold)).width;
+      final preview = tester.getSize(
+        find.descendant(
+          of: find.byType(PdfReviewScreen),
+          matching: find.byType(Image),
+        ),
+      );
+      // The list's horizontal padding is the only thing between the preview and
+      // the screen edges: no half-width column, no fixed thumbnail width.
+      expect(
+        preview.width,
+        moreOrLessEquals(screenWidth - 2 * AppSpacing.lg, epsilon: 0.5),
+      );
+    }
   });
 
   testWidgets('an empty file name cannot be created, and writes nothing', (
@@ -203,14 +373,11 @@ void main() {
     await tester.pumpWidget(harness(pages: drafts([pageA, pageB, pageC])));
     await tester.pump();
 
-    expect(deleteButtons(), findsNWidgets(3));
-
+    // The delete control floats on the first page's preview, so it is reachable
+    // without scrolling past a full-width page.
     await tester.tap(deleteButtons().first);
     await tester.pump();
 
-    expect(deleteButtons(), findsNWidgets(2));
-    // Pages are renumbered by position, so the last one is now page 2.
-    expect(find.text('Page 3'), findsNothing);
     expect(find.text('2 pages'), findsOneWidget);
     expect(find.text('Create PDF (2 pages)'), findsOneWidget);
   });
@@ -221,7 +388,7 @@ void main() {
     await tester.pumpWidget(harness(pages: drafts([pageA])));
     await tester.pump();
 
-    await tester.tap(deleteButtons());
+    await tester.tap(deleteButtons().first);
     await tester.pump();
 
     expect(find.text('No pages yet'), findsOneWidget);
@@ -232,6 +399,26 @@ void main() {
     expect(create.onPressed, isNull);
   });
 
+  testWidgets('system Back with pages asks before discarding them', (
+    tester,
+  ) async {
+    await tester.pumpWidget(harness(pages: drafts([pageA])));
+    await tester.pump();
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    // The pages are still there, and leaving is a decision the user has to
+    // make rather than something a stray Back does for them.
+    expect(find.text('Discard these pages?'), findsOneWidget);
+    expect(find.text('Page 1'), findsOneWidget);
+
+    await tester.tap(find.text('Keep editing'));
+    await tester.pumpAndSettle();
+    expect(find.text('Page 1'), findsOneWidget);
+    expect(find.text('Discard these pages?'), findsNothing);
+  });
+
   testWidgets('adding images appends them, and says how many arrived', (
     tester,
   ) async {
@@ -240,10 +427,10 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('Add images'));
-    await tester.pump();
+    await tapAddButton(tester, 'Choose images');
     await tester.pump();
 
+    await scrollPreviewTo(tester, find.text('Page 3'));
     expect(find.text('Page 3'), findsOneWidget);
     expect(find.text('Create PDF (3 pages)'), findsOneWidget);
     expect(find.text('2 pages added'), findsOneWidget);
@@ -257,11 +444,10 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('Add images'));
-    await tester.pump();
+    await tapAddButton(tester, 'Choose images');
     await tester.pump();
 
-    expect(deleteButtons(), findsOneWidget);
+    expect(find.text('1 page'), findsOneWidget);
     expect(find.byType(SnackBar), findsNothing);
   });
 
@@ -274,11 +460,11 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('Add pages'));
-    await tester.pump();
+    await tapAddButton(tester, 'Take photos');
     await tester.pump();
 
-    expect(deleteButtons(), findsNWidgets(3));
+    expect(find.text('3 pages'), findsOneWidget);
+    expect(find.text('Create PDF (3 pages)'), findsOneWidget);
   });
 
   testWidgets('the file name is editable and the resolved name follows it', (
@@ -309,27 +495,40 @@ void main() {
     await tester.enterText(find.byType(TextField), 'report.pdf.pdf');
     await tester.pump();
     expect(find.text('Will be saved as report.pdf'), findsOneWidget);
+    // The suffix is hidden once the typed name already ends in `.pdf`, so the
+    // field never reads `report.pdf.pdf`.
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).decoration?.suffixText,
+      isNull,
+    );
   });
 
   testWidgets('reordering a page changes the document order', (tester) async {
+    // A tall surface keeps both full-width pages on screen together, so the
+    // long-press drag has a visible start and drop target.
+    tester.view.physicalSize = const Size(400, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
     final writer = _RecordingWriter();
     await tester.pumpWidget(
-      harness(pages: drafts([pageA, pageB, pageC]), writer: writer),
+      harness(
+        pages: drafts([pageA, pageB]),
+        initialFileName: 'scan',
+        writer: writer,
+      ),
     );
     await tester.pump();
 
-    // Drop page 3 onto page 1: it becomes the first page.
-    await dragTile(tester, 'Page 3', 'Page 1');
+    await dragTile(tester, 'Page 2', 'Page 1');
 
-    // A name is required now, so create with one.
-    await tester.enterText(find.byType(TextField), 'Order');
+    await tester.tap(find.text('Create PDF (2 pages)'));
     await tester.pump();
-    await tester.tap(find.textContaining('Create PDF'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-
-    // The order the user arranged is the order in the file — exactly.
-    expect(writer.paths, <String>[pageC, pageA, pageB]);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(writer.paths, [pageB, pageA]);
   });
 
   testWidgets('creating writes the pages with the chosen file name', (
@@ -357,7 +556,8 @@ void main() {
     expect(find.text('PDF created'), findsOneWidget);
     expect(find.text('Trip.pdf'), findsOneWidget);
     expect(find.text('2 pages · 4 KB'), findsOneWidget);
-    expect(find.text('Written in 0.3 s'), findsOneWidget);
+    // 0.3 s
+    expect(find.textContaining('Written in'), findsNothing);
   });
 
   testWidgets('a failure is reported and no success is claimed', (

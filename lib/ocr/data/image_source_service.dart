@@ -1,4 +1,6 @@
 import 'package:image_picker/image_picker.dart';
+import 'package:image_picker_android/image_picker_android.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 
 /// Thin wrapper around gallery image selection.
 ///
@@ -6,7 +8,22 @@ import 'package:image_picker/image_picker.dart';
 /// `camera` package's preview controller); this service only covers picking an
 /// existing image, which is a single platform call.
 class ImageSourceService {
-  ImageSourceService({ImagePicker? picker}) : _picker = picker ?? ImagePicker();
+  ImageSourceService({ImagePicker? picker})
+    : _picker = picker ?? _createPicker();
+
+  /// Builds the picker used for both single- and multi-image selection.
+  ///
+  /// On Android this opts into the system **Photo Picker**. Without it the
+  /// plugin falls back to `ACTION_GET_CONTENT`, which on this app's minimum
+  /// Android versions opens a file browser (DocumentsUI) — a storage UI, not a
+  /// gallery. Opting in is a no-op on other platforms.
+  static ImagePicker _createPicker() {
+    final platform = ImagePickerPlatform.instance;
+    if (platform is ImagePickerAndroid) {
+      platform.useAndroidPhotoPicker = true;
+    }
+    return ImagePicker();
+  }
 
   final ImagePicker _picker;
 

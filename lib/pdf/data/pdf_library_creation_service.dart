@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 // `package:pdf` exports a `PdfException` of its own, which describes a failure
@@ -7,10 +8,12 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart' hide PdfException;
 import 'package:pdf/widgets.dart' as pw;
 
+import '../../app/app_brand.dart';
 import '../domain/pdf_creation.dart';
 import '../domain/pdf_exception.dart';
 import '../domain/pdf_output_directory.dart';
 import '../domain/pdf_page_layout.dart';
+import 'pdf_page_encoder.dart';
 
 /// [PdfCreationService] backed by the pure-Dart `pdf` package.
 ///
@@ -61,6 +64,7 @@ class PdfLibraryCreationService implements PdfCreationService {
     required List<String> pageImagePaths,
     String fileName = PdfCreationService.defaultFileName,
     void Function(int completed, int total)? onProgress,
+    PdfCompression compression = PdfCompression.standard,
   }) async {
     if (pageImagePaths.isEmpty) {
       throw const PdfException(
@@ -71,10 +75,10 @@ class PdfLibraryCreationService implements PdfCreationService {
 
     final name = sanitizePdfFileName(fileName);
     final stopwatch = Stopwatch()..start();
-    final document = pw.Document(title: name, creator: 'PDF Utility');
+    final document = pw.Document(title: name, creator: AppBrand.name);
 
     for (var index = 0; index < pageImagePaths.length; index++) {
-      final bytes = await _readPage(pageImagePaths[index], index);
+      final bytes = await _pageBytes(pageImagePaths[index], index, compression);
       document.addPage(
         pw.Page(
           pageFormat: _formatFor(bytes),
@@ -124,6 +128,36 @@ class PdfLibraryCreationService implements PdfCreationService {
         PdfErrorKind.writeFailure,
         'The PDF could not be saved on this device. Check the available storage '
         'and try again.',
+        cause: error,
+      );
+    }
+  }
+
+  /// Reads a page and, for [PdfCompression.compress], re-encodes it before it
+  /// is embedded.
+  ///
+  /// Compression runs in an isolate: decoding a 12-megapixel JPEG is tens of
+  /// milliseconds of pure CPU, and doing it on the UI isolate would freeze the
+  /// progress overlay it is meant to keep animated. The original file is only
+  /// ever read — never rewritten.
+  ///
+  /// The encoding itself lives in [PdfPageEncoder], so the size estimate on the
+  /// review screen is computed from exactly the bytes written here.
+  Future<Uint8List> _pageBytes(
+    String path,
+    int index,
+    PdfCompression compression,
+  ) async {
+    final bytes = await _readPage(path, index);
+    if (compression == PdfCompression.standard) return bytes;
+
+    try {
+      return await Isolate.run(() => PdfPageEncoder.compress(bytes));
+    } catch (error) {
+      throw PdfException(
+        PdfErrorKind.unreadable,
+        'Page ${index + 1} could not be compressed. Try Standard compression '
+        'instead.',
         cause: error,
       );
     }

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:pdfx/pdfx.dart' as pdfx;
 
@@ -325,7 +326,12 @@ class _SearchablePdfViewerScreenState extends State<SearchablePdfViewerScreen> {
                     child: ColoredBox(
                       color: const Color(0xFF2F3448),
                       child: _error != null
-                          ? _OpenProblem(detail: _error.toString())
+                          ? _OpenProblem(
+                              detail: kDebugMode
+                                  ? _error.toString()
+                                  : 'The file may have been moved or damaged. '
+                                        'Try opening it again.',
+                            )
                           : (widget.surface?.call(
                                   context,
                                   path: widget.path,
@@ -444,7 +450,7 @@ class _SearchField extends StatelessWidget {
                   isDense: true,
                   hintText: reading
                       ? 'Reading the text layer…'
-                      : 'Search Hindi or English text',
+                      : 'Search this PDF',
                   hintStyle: theme.textTheme.bodyMedium?.copyWith(
                     color: AppColors.muted,
                   ),

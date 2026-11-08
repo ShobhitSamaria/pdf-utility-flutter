@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../app/app_scope.dart';
+import '../../app/app_theme.dart';
 import '../../ocr/presentation/ocr_failure_notice.dart';
 import '../../screens/ocr_result_screen.dart';
 import '../data/file_picker_pdf_source.dart';
@@ -14,6 +15,8 @@ import '../domain/pdf_exception.dart';
 import '../domain/pdf_page_renderer.dart';
 import '../domain/pdf_source_service.dart';
 import '../domain/rendered_pdf_page.dart';
+import 'searchable_pdf_preview_screen.dart';
+import 'searchable_pdf_screen.dart';
 
 /// Pick a PDF, choose a page, read it with the same on-device OCR the photo
 /// path uses.
@@ -32,10 +35,37 @@ import '../domain/rendered_pdf_page.dart';
 ///
 /// Nothing leaves the device at any point — no upload, no conversion service.
 class PdfImportScreen extends StatefulWidget {
-  const PdfImportScreen({super.key, this.source, this.renderer});
+  const PdfImportScreen({
+    super.key,
+    this.source,
+    this.renderer,
+    this.autoPick = false,
+    this.convertOnPick = false,
+    this.searchableBuilder,
+  });
 
   /// Injectable so tests never open the platform document picker.
   final PdfSourceService? source;
+
+  /// Opens the platform picker as soon as the screen is on screen.
+  ///
+  /// Used by the OCR Scanner entry point, where the user has already chosen
+  /// "Import PDF": showing an empty import screen and asking them to press
+  /// "Choose PDF" again is a redundant step. A cancelled picker still leaves
+  /// the normal empty state (with its own Choose PDF button), so this is only
+  /// a shortcut, not a different flow.
+  final bool autoPick;
+
+  /// Goes straight to the searchable-PDF conversion after a file is picked.
+  ///
+  /// This is the OCR Scanner entry point: Import PDF means “make this PDF
+  /// searchable”, so the page-preview step that exists for reading a page is
+  /// not shown first. The preview screen starts the conversion by itself.
+  final bool convertOnPick;
+
+  /// Injectable conversion screen, so a widget test can prove the hand-off
+  /// without PDFium or ML Kit. Defaults to the real preview screen.
+  final Widget Function(BuildContext context, String path)? searchableBuilder;
 
   /// Injectable so tests never touch native PDFium.
   final PdfPageRenderer? renderer;
@@ -68,6 +98,16 @@ class _PdfImportScreenState extends State<PdfImportScreen> {
   Timer? _ticker;
   Duration _elapsed = Duration.zero;
   static const Duration _tick = Duration(milliseconds: 200);
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.autoPick) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_choosePdf());
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -120,6 +160,20 @@ class _PdfImportScreenState extends State<PdfImportScreen> {
       final path = await _source.pickPdf();
       // Cancelled is a normal outcome: leave the screen exactly as it was.
       if (path == null || !mounted) return;
+      if (widget.convertOnPick) {
+        // Replace this screen rather than stacking on it: the user chose a
+        // file to convert, so Back from the conversion should go Home, not to
+        // an import screen whose job is already done.
+        final builder = widget.searchableBuilder;
+        await Navigator.of(context).pushReplacement<void, void>(
+          MaterialPageRoute<void>(
+            builder: (context) =>
+                builder?.call(context, path) ??
+                SearchablePdfPreviewScreen(path: path, autoConvert: true),
+          ),
+        );
+        return;
+      }
       await _open(path);
     } on PdfException catch (error) {
       _fail(error);
@@ -215,6 +269,25 @@ class _PdfImportScreenState extends State<PdfImportScreen> {
 
   // --- view ------------------------------------------------------------------
 
+  /// Opens the searchable-PDF flow for the current document, or for a new one
+  /// when no document is open yet.
+  ///
+  /// This is the production entry point for a feature that used to live in a
+  /// Home sheet. Keeping it here means the user finds it where PDFs are already
+  /// handled, without adding a third card to Home.
+  Future<void> _makeSearchable() async {
+    if (_busy) return;
+
+    final document = _document;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => document == null
+            ? const SearchablePdfScreen()
+            : SearchablePdfPreviewScreen(path: document.path),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final document = _document;
@@ -223,6 +296,12 @@ class _PdfImportScreenState extends State<PdfImportScreen> {
       appBar: AppBar(
         title: const Text('Import PDF'),
         actions: [
+          if (document != null)
+            IconButton(
+              tooltip: 'Make PDF Searchable',
+              onPressed: _busy ? null : () => unawaited(_makeSearchable()),
+              icon: const Icon(Icons.manage_search_outlined),
+            ),
           if (document != null)
             IconButton(
               tooltip: 'Choose another PDF',
@@ -239,6 +318,7 @@ class _PdfImportScreenState extends State<PdfImportScreen> {
                 busyLabel: _busyLabel,
                 elapsed: _elapsed,
                 onChoose: _choosePdf,
+                onMakeSearchable: () => unawaited(_makeSearchable()),
               )
             : Column(
                 children: [
@@ -273,6 +353,7 @@ class _PdfImportScreenState extends State<PdfImportScreen> {
                     busy: _busy,
                     onRead: () => unawaited(_readPage()),
                     onChooseAnother: _choosePdf,
+                    onMakeSearchable: () => unawaited(_makeSearchable()),
                   ),
                 ],
               ),
@@ -290,6 +371,7 @@ class _EmptyState extends StatelessWidget {
     required this.busyLabel,
     required this.elapsed,
     required this.onChoose,
+    required this.onMakeSearchable,
   });
 
   final PdfException? error;
@@ -297,6 +379,7 @@ class _EmptyState extends StatelessWidget {
   final String busyLabel;
   final Duration elapsed;
   final VoidCallback onChoose;
+  final VoidCallback onMakeSearchable;
 
   @override
   Widget build(BuildContext context) {
@@ -308,13 +391,30 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.picture_as_pdf_outlined, size: 72),
-            const SizedBox(height: 12),
-            Text('Read a PDF', style: theme.textTheme.titleLarge),
+            Container(
+              width: 88,
+              height: 88,
+              decoration: const BoxDecoration(
+                color: AppColors.tile,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.picture_as_pdf_outlined,
+                size: 40,
+                color: AppColors.primary,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Read a PDF',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
             const SizedBox(height: 8),
             Text(
-              'Pick a PDF and each page is rendered on this device, then read '
-              'with the same on-device OCR used for photos. Nothing is uploaded.',
+              'Choose a PDF and read any page with on-device OCR. '
+              'Nothing is uploaded.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall,
             ),
@@ -326,6 +426,12 @@ class _EmptyState extends StatelessWidget {
                 icon: const Icon(Icons.upload_file_outlined),
                 label: const Text('Choose PDF'),
               ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            TextButton.icon(
+              onPressed: busy ? null : onMakeSearchable,
+              icon: const Icon(Icons.manage_search_outlined, size: 18),
+              label: const Text('Make PDF Searchable'),
             ),
             if (busy) ...[
               const SizedBox(height: 20),
@@ -498,12 +604,14 @@ class _ActionBar extends StatelessWidget {
     required this.busy,
     required this.onRead,
     required this.onChooseAnother,
+    required this.onMakeSearchable,
   });
 
   final RenderedPdfPage? page;
   final bool busy;
   final VoidCallback onRead;
   final VoidCallback onChooseAnother;
+  final VoidCallback onMakeSearchable;
 
   @override
   Widget build(BuildContext context) {
@@ -519,11 +627,7 @@ class _ActionBar extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
-                'Page ${rendered.pageNumber} rendered at '
-                '${rendered.width} × ${rendered.height} px'
-                '${rendered.elapsed == null ? '' : ' in '
-                          '${(rendered.elapsed!.inMilliseconds / 1000).toStringAsFixed(1)} s'}'
-                ' — this is the image that will be read.',
+                'This is the page that will be read.',
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodySmall,
               ),
@@ -546,6 +650,11 @@ class _ActionBar extends StatelessWidget {
               icon: const Icon(Icons.folder_open_outlined),
               label: const Text('Change PDF'),
             ),
+          ),
+          TextButton.icon(
+            onPressed: busy ? null : onMakeSearchable,
+            icon: const Icon(Icons.manage_search_outlined, size: 18),
+            label: const Text('Make PDF Searchable'),
           ),
         ],
       ),

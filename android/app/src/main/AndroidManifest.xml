@@ -1,7 +1,16 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- Live camera preview + still capture (camera package). The gallery path
          uses the Android Photo Picker and needs no storage permission. -->
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- The camera plugin declares RECORD_AUDIO for video recording. This app
+         only ever captures stills (`enableAudio: false` in both capture
+         screens), so the microphone permission is removed from the merged
+         manifest rather than requested and silently unused. -->
+    <uses-permission
+        android:name="android.permission.RECORD_AUDIO"
+        tools:node="remove" />
 
     <!-- Needed only to *fetch* the on-device ML Kit translation models the
          first time a language is used; translation itself always runs offline.
@@ -21,9 +30,10 @@
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
     <application
-        android:label="pdf_utility_flutter"
+        android:label="OCR PDF Studio"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round">
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -11,6 +11,7 @@ import 'package:pdf_utility_flutter/ocr/domain/ocr_result.dart';
 import 'package:pdf_utility_flutter/ocr/domain/ocr_script_mode.dart';
 import 'package:pdf_utility_flutter/ocr/domain/ocr_service.dart';
 import 'package:pdf_utility_flutter/pdf/domain/pdf_page_draft.dart';
+import 'package:pdf_utility_flutter/pdf/presentation/pdf_import_screen.dart';
 import 'package:pdf_utility_flutter/pdf/presentation/pdf_review_screen.dart';
 import 'package:pdf_utility_flutter/screens/home_screen.dart';
 import 'package:pdf_utility_flutter/screens/ocr_result_screen.dart';
@@ -97,9 +98,9 @@ void main() {
 
   setUp(() => ocr = _RecordingOcrService());
 
-  /// The Home screen with its two platform seams stubbed: no camera, no photo
-  /// picker, no ML Kit. Everything else — the sheets, the navigation, the
-  /// recogniser call — is the real code path.
+  /// The Home screen with its platform seams stubbed: no camera, no photo
+  /// picker, no ML Kit. Everything else — the source screen, the sheet, the
+  /// navigation and the recogniser call — is the real code path.
   Widget harness({
     OcrService? ocrService,
     Future<String?> Function()? pickFromGallery,
@@ -136,55 +137,107 @@ void main() {
     await tester.pump();
   }
 
-  /// Taps an entry point on Home and lets the sheet appear.
-  Future<void> openSheet(WidgetTester tester, String entryLabel) async {
-    await tester.tap(find.text(entryLabel));
+  /// Opens the OCR Scanner source screen.
+  Future<void> openExtractText(WidgetTester tester) async {
+    await tester.tap(find.byKey(const Key('home-extract-text')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
   }
 
-  /// Taps a row inside the open sheet and lets the work it starts finish.
+  /// Opens the Create PDF sheet.
+  Future<void> openCreatePdf(WidgetTester tester) async {
+    await tester.tap(find.byKey(const Key('home-create-pdf')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
+
+  /// Taps a source and lets the work it starts finish.
   ///
   /// Deliberately not `pumpAndSettle`: the result screen renders an image file
   /// that does not exist in a test, so the test must not wait on it (the same
   /// reason `widget_test.dart` pushes that screen with explicit pumps).
-  Future<void> chooseRow(WidgetTester tester, String rowLabel) async {
-    await tester.tap(find.text(rowLabel));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 600));
+  Future<void> chooseSource(WidgetTester tester, String label) async {
+    await tester.tap(find.text(label));
+    // Source route pops, the OCR flow route pushes, its first frame starts the
+    // capture/pick, and the read replaces it with the result. Each of those is
+    // a separate frame, so pump through all of them.
+    for (var i = 0; i < 6; i++) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
   }
 
-  testWidgets('Scan document → Extract Text reads the captured photo', (
-    tester,
-  ) async {
+  testWidgets('Home offers exactly OCR Scanner and Create PDF', (tester) async {
+    await pumpHome(tester, harness());
+
+    // The two choices, in priority order.
+    expect(find.byKey(const Key('home-extract-text')), findsOneWidget);
+    expect(find.byKey(const Key('home-create-pdf')), findsOneWidget);
+    expect(find.text('OCR Scanner'), findsOneWidget);
+    expect(find.text('Scan photos or PDFs to extract text.'), findsOneWidget);
+    expect(
+      find.text('Create PDF using camera or gallery images.'),
+      findsOneWidget,
+    );
+
+    // The old entry points, their sheets and the duplicate script footer are
+    // gone from Home. Their screens still exist behind the two choices.
+    expect(find.text('Scan document'), findsNothing);
+    expect(find.text('Choose image'), findsNothing);
+    expect(find.textContaining('Script:'), findsNothing);
+    expect(find.text('Import PDF'), findsNothing);
+    expect(find.text('Make PDF Searchable'), findsNothing);
+  });
+
+  testWidgets('OCR Scanner → Camera reads the captured photo', (tester) async {
     await pumpHome(
       tester,
       harness(capturePage: (_) async => '/tmp/capture.jpg'),
     );
 
-    await openSheet(tester, 'Scan document');
-    await chooseRow(tester, 'Extract Text (OCR)');
+    await openExtractText(tester);
+    // The screen's own title, not the Home card behind it.
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.text('OCR Scanner'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Choose a source'), findsOneWidget);
 
-    // The sheet's first row is the pre-existing camera → OCR flow, unchanged.
+    await chooseSource(tester, 'Camera');
+
     expect(ocr.paths, ['/tmp/capture.jpg']);
     expect(ocr.requestedMode, OcrScriptMode.defaultMode.name);
     expect(find.byType(OcrResultScreen), findsOneWidget);
   });
 
-  testWidgets('Choose image → Extract Text reads the chosen image', (
-    tester,
-  ) async {
+  testWidgets('OCR Scanner → Gallery reads the chosen image', (tester) async {
     await pumpHome(
       tester,
       harness(pickFromGallery: () async => '/tmp/gallery.jpg'),
     );
 
-    await openSheet(tester, 'Choose image');
-    await chooseRow(tester, 'Extract Text');
+    await openExtractText(tester);
+    await chooseSource(tester, 'Gallery');
 
-    // The gallery flow is still the gallery flow: one pick, one read.
+    // One pick, one read, same recogniser call as the camera path.
     expect(ocr.paths, ['/tmp/gallery.jpg']);
     expect(find.byType(OcrResultScreen), findsOneWidget);
+  });
+
+  testWidgets('OCR Scanner → Import PDF opens the PDF importer', (
+    tester,
+  ) async {
+    await pumpHome(tester, harness());
+
+    await openExtractText(tester);
+    await chooseSource(tester, 'Import PDF');
+
+    // The existing importer, unchanged: it owns picking and reading a page.
+    expect(find.byType(PdfImportScreen), findsOneWidget);
+    expect(find.text('Read a PDF'), findsOneWidget);
+    expect(ocr.paths, isEmpty);
   });
 
   testWidgets('a failed read is reported and opens no result screen', (
@@ -201,8 +254,8 @@ void main() {
       harness(ocrService: failing, capturePage: (_) async => '/tmp/gone.jpg'),
     );
 
-    await openSheet(tester, 'Scan document');
-    await chooseRow(tester, 'Extract Text (OCR)');
+    await openExtractText(tester);
+    await chooseSource(tester, 'Camera');
 
     // The user gets one actionable sentence, not a stack trace, and no result
     // screen is opened onto a read that did not happen.
@@ -222,14 +275,14 @@ void main() {
   ) async {
     await pumpHome(tester, harness(capturePage: (_) async => null));
 
-    await openSheet(tester, 'Scan document');
-    await chooseRow(tester, 'Extract Text (OCR)');
+    await openExtractText(tester);
+    await chooseSource(tester, 'Camera');
 
     expect(ocr.paths, isEmpty);
     expect(find.byType(OcrResultScreen), findsNothing);
   });
 
-  testWidgets('Scan document → Create PDF captures a session of pages', (
+  testWidgets('Create PDF → Camera captures a session of pages', (
     tester,
   ) async {
     final reviewed = <PdfPageDraft>[];
@@ -241,8 +294,8 @@ void main() {
       ),
     );
 
-    await openSheet(tester, 'Scan document');
-    await chooseRow(tester, 'Create PDF');
+    await openCreatePdf(tester);
+    await chooseSource(tester, 'Camera');
 
     // Every captured page reached the review step, in capture order, labelled
     // as captured — and OCR was not asked to read anything on the way.
@@ -255,10 +308,9 @@ void main() {
       isTrue,
     );
     expect(ocr.paths, isEmpty);
-    expect(find.byType(OcrResultScreen), findsNothing);
   });
 
-  testWidgets('Choose image → Create PDF combines the chosen images', (
+  testWidgets('Create PDF → Gallery combines the chosen images', (
     tester,
   ) async {
     final reviewed = <PdfPageDraft>[];
@@ -270,8 +322,8 @@ void main() {
       ),
     );
 
-    await openSheet(tester, 'Choose image');
-    await chooseRow(tester, 'Create PDF');
+    await openCreatePdf(tester);
+    await chooseSource(tester, 'Gallery');
 
     expect(reviewed.map((page) => page.imagePath).toList(), [
       '/tmp/scan-a.jpg',
@@ -295,13 +347,13 @@ void main() {
       ),
     );
 
-    await openSheet(tester, 'Scan document');
-    await chooseRow(tester, 'Create PDF');
+    await openCreatePdf(tester);
+    await chooseSource(tester, 'Camera');
 
     expect(opened, isFalse);
   });
 
-  testWidgets('Choose image → Create PDF opens the real review screen', (
+  testWidgets('Create PDF → Gallery opens the real review screen', (
     tester,
   ) async {
     // No review seam: this is the wiring the app actually ships, and the review
@@ -312,46 +364,58 @@ void main() {
       harness(pickImages: () async => ['/tmp/scan-a.jpg', '/tmp/scan-b.jpg']),
     );
 
-    await openSheet(tester, 'Choose image');
-    await chooseRow(tester, 'Create PDF');
+    await openCreatePdf(tester);
+    await chooseSource(tester, 'Gallery');
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.byType(PdfReviewScreen), findsOneWidget);
     expect(find.text('Review pages'), findsOneWidget);
     expect(find.text('Page 1'), findsOneWidget);
+
+    // The preview is a full-width lazy list, so the second page is built when it
+    // is scrolled into view rather than being squeezed into a half-width grid.
+    await tester.scrollUntilVisible(
+      find.text('Page 2'),
+      240,
+      scrollable: find
+          .descendant(of: find.byType(ListView), matching: find.byType(Scrollable))
+          .first,
+    );
     expect(find.text('Page 2'), findsOneWidget);
     expect(find.text('Create PDF (2 pages)'), findsOneWidget);
   });
 
-  testWidgets('Import PDF offers Extract Text and nothing else', (
+  testWidgets('the source screen closes before the result opens', (
     tester,
   ) async {
-    await pumpHome(tester, harness());
-
-    await openSheet(tester, 'Import PDF');
-
-    // The one action that reads a PDF. "View PDF / Create PDF" used to sit here
-    // as a second, differently-shaped way into the same document; it is gone.
-    expect(find.text('Extract Text'), findsOneWidget);
-    expect(find.text('Choose a page to recognize'), findsOneWidget);
-    expect(find.text('View PDF / Create PDF'), findsNothing);
-    expect(find.textContaining('View PDF'), findsNothing);
-  });
-
-  testWidgets('the sheet closes before anything navigates', (tester) async {
     await pumpHome(
       tester,
       harness(pickFromGallery: () async => '/tmp/gallery.jpg'),
     );
 
-    await openSheet(tester, 'Choose image');
-    expect(find.text('Read text from an image'), findsOneWidget);
+    await openExtractText(tester);
+    await tester.pump();
+    expect(find.text('Choose a source'), findsOneWidget);
 
-    await chooseRow(tester, 'Extract Text');
+    await chooseSource(tester, 'Gallery');
 
-    // The sheet is gone by the time the result screen is on top, so the user
-    // never sees a modal stranded over the result.
-    expect(find.text('Read text from an image'), findsNothing);
+    // The chooser is gone by the time the result screen is on top, so Back from
+    // the result goes Home rather than back into a stale source list.
+    expect(find.text('Choose a source'), findsNothing);
     expect(find.byType(OcrResultScreen), findsOneWidget);
+  });
+
+  testWidgets('Settings is still reachable from the header icon', (
+    tester,
+  ) async {
+    await pumpHome(tester, harness());
+
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // The script choice moved here; it was not removed.
+    expect(find.text('Text script'), findsOneWidget);
+    expect(find.text('Choose a script'), findsOneWidget);
   });
 }

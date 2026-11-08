@@ -234,16 +234,14 @@ class _ExtractedTextBodyState extends State<ExtractedTextBody> {
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
           child: Text('Extracted text', style: theme.textTheme.titleMedium),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text(
-            '${widget.result.blocks.length} blocks • '
-            '${widget.result.elements.length} words • '
-            '${widget.result.sourceImage.width}×'
-            '${widget.result.sourceImage.height}',
-            style: theme.textTheme.bodySmall,
+        if (hasText)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              '${widget.result.elements.length} words found',
+              style: theme.textTheme.bodySmall,
+            ),
           ),
-        ),
         if (hasText) _buildFindRow(theme),
         if (!hasText)
           Padding(

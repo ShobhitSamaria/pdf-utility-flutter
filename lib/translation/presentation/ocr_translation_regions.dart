@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../../ocr/domain/ocr_document_layout.dart';
 import '../../ocr/domain/ocr_element.dart';
 import '../../ocr/domain/ocr_line.dart';
@@ -56,6 +58,15 @@ abstract final class OcrTranslationRegions {
             text: text,
             bounds: OcrDocumentLayout.boundsOf(chunk),
             kind: TranslatedRegionKind.paragraph,
+            // Carried through so the overlay can size the translation like the
+            // printed lines it replaces: a paragraph's box height alone says
+            // nothing about how tall its lines are. Blank lines do not count —
+            // they add no printed text, so counting them would shrink the type
+            // for no reason.
+            sourceLines: math.max(
+              1,
+              chunk.where((line) => line.text.trim().isNotEmpty).length,
+            ),
           ),
         );
       }

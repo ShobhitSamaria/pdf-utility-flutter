@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// Design tokens for the Figma redesign (Phase 1: Home + its action sheets).
 ///
@@ -31,7 +32,10 @@ abstract final class AppColors {
   static const Color ink = Color(0xFF1C2143);
 
   /// Restrained grey for subtitles, hints and captions.
-  static const Color muted = Color(0xFF6B7186);
+  ///
+  /// Dark enough to clear WCAG AA on every surface the app puts it on
+  /// (5.3:1 on `rowTint`, 5.8:1 on white) while still reading as secondary.
+  static const Color muted = Color(0xFF5F6579);
 
   /// Pale periwinkle: the hero icon tile and the icon tile inside a sheet row.
   static const Color tile = Color(0xFFEDEEFA);
@@ -149,6 +153,15 @@ ThemeData buildAppTheme() {
       scrolledUnderElevation: 0,
       centerTitle: false,
       titleTextStyle: textTheme.titleMedium,
+      // AppBar's default `SystemUiOverlayStyle.dark` paints the navigation bar
+      // black. The app is light-only, so keep the page colour there too.
+      systemOverlayStyle: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+        systemNavigationBarColor: AppColors.surface,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
@@ -167,6 +180,26 @@ ThemeData buildAppTheme() {
         foregroundColor: AppColors.primary,
         minimumSize: const Size(48, 44),
         textStyle: textTheme.titleSmall,
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.primary,
+        // Comfortable secondary action, matching the primary button's rhythm
+        // without competing with it.
+        minimumSize: const Size(48, 48),
+        side: const BorderSide(color: AppColors.hairline),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadii.button),
+        ),
+        textStyle: textTheme.titleSmall,
+      ),
+    ),
+    dialogTheme: const DialogThemeData(
+      backgroundColor: AppColors.surface,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(AppRadii.sheet)),
       ),
     ),
     bottomSheetTheme: const BottomSheetThemeData(

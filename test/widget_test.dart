@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pdf_utility_flutter/app/app_brand.dart';
+import 'package:pdf_utility_flutter/app/app_theme.dart';
 import 'package:pdf_utility_flutter/main.dart';
 import 'package:pdf_utility_flutter/ocr/domain/ocr_block.dart';
 import 'package:pdf_utility_flutter/ocr/domain/ocr_element.dart';
@@ -102,78 +104,86 @@ void main() {
     await tapVisible(tester, find.text('Choose a script'));
   }
 
-  testWidgets('Home presents the design: hero, primary and two ghost actions', (
+  testWidgets('Home offers OCR Scanner and Create PDF, and nothing else', (
     tester,
   ) async {
     await pumpApp(tester);
 
-    expect(find.text('PDF Utility'), findsOneWidget);
+    expect(find.text(AppBrand.name), findsOneWidget);
     expect(find.text('Your documents,\nready to use.'), findsOneWidget);
     expect(
       find.text('Scan, extract text and translate.\nAll in one place.'),
       findsOneWidget,
     );
-    expect(find.text('Scan document'), findsOneWidget);
-    expect(find.text('Choose image'), findsOneWidget);
+
+    // The product's two choices, in priority order.
+    expect(find.byKey(const Key('home-extract-text')), findsOneWidget);
+    expect(find.byKey(const Key('home-create-pdf')), findsOneWidget);
+    expect(find.text('OCR Scanner'), findsOneWidget);
+    expect(find.text('Scan photos or PDFs to extract text.'), findsOneWidget);
+    expect(
+      find.text('Create PDF using camera or gallery images.'),
+      findsOneWidget,
+    );
+
+    // The old three entry points and the duplicate script footer are gone.
+    expect(find.text('Scan document'), findsNothing);
+    expect(find.text('Choose image'), findsNothing);
+    expect(find.text('Import PDF'), findsNothing);
+    expect(find.text('Script: '), findsNothing);
+  });
+
+  testWidgets('OCR Scanner offers Camera, Gallery and Import PDF', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    await tapVisible(tester, find.byKey(const Key('home-extract-text')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Camera'), findsOneWidget);
+    expect(find.text('Gallery'), findsOneWidget);
     expect(find.text('Import PDF'), findsOneWidget);
+    expect(find.text('Take a photo of a document'), findsOneWidget);
+    expect(find.text('Choose photos from your library'), findsOneWidget);
+    expect(find.text('Pick a PDF and select a page'), findsOneWidget);
+    expect(find.text('Your files stay on this device.'), findsOneWidget);
 
-    // The script is not a question the user has to answer, so it is a quiet row
-    // rather than a control block.
-    expect(find.text('Script: '), findsOneWidget);
-    expect(find.text('Auto'), findsOneWidget);
+    // Import PDF is the recommended source: first, and on the filled brand
+    // surface rather than the quiet row used by Camera and Gallery.
+    final importTop = tester.getTopLeft(find.text('Import PDF')).dy;
+    final cameraTop = tester.getTopLeft(find.text('Camera')).dy;
+    final galleryTop = tester.getTopLeft(find.text('Gallery')).dy;
+    expect(importTop, lessThan(cameraTop));
+    expect(cameraTop, lessThan(galleryTop));
+
+    final importSurface = tester.widget<Material>(
+      find
+          .ancestor(
+            of: find.text('Import PDF'),
+            matching: find.byType(Material),
+          )
+          .first,
+    );
+    expect(importSurface.color, AppColors.primary);
   });
 
-  testWidgets('Scan document offers Extract Text and Create PDF', (
-    tester,
-  ) async {
+  testWidgets('Create PDF offers Camera and Gallery', (tester) async {
     await pumpApp(tester);
-    await tapVisible(tester, find.text('Scan document'));
+    await tapVisible(tester, find.byKey(const Key('home-create-pdf')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Extract Text (OCR)'), findsOneWidget);
-    expect(find.text('Scan, copy and translate'), findsOneWidget);
-    expect(find.text('Create PDF'), findsOneWidget);
     expect(find.text('Capture one or more pages'), findsOneWidget);
-    // Both rows work now (capture → review → the PDF is written), so neither
-    // carries a badge: there is no placeholder left in this sheet.
-    expect(find.text('Coming soon'), findsNothing);
-  });
-
-  testWidgets('Choose image offers Extract Text and Create PDF', (
-    tester,
-  ) async {
-    await pumpApp(tester);
-    await tapVisible(tester, find.text('Choose image'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Extract Text'), findsOneWidget);
-    expect(find.text('Read text from an image'), findsOneWidget);
-    expect(find.text('Create PDF'), findsOneWidget);
     expect(find.text('Combine images into a PDF'), findsOneWidget);
     expect(find.text('Coming soon'), findsNothing);
   });
 
-  testWidgets('Import PDF offers Extract Text only', (tester) async {
-    await pumpApp(tester);
-    await tapVisible(tester, find.text('Import PDF'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Extract Text'), findsOneWidget);
-    expect(find.text('Choose a page to recognize'), findsOneWidget);
-    // "View PDF / Create PDF" was removed: importing a PDF is for reading it,
-    // and the viewer is no longer offered from Home.
-    expect(find.text('View PDF / Create PDF'), findsNothing);
-    expect(find.text('Read or select pages for a new PDF'), findsNothing);
-    expect(find.text('Coming soon'), findsNothing);
-  });
-
-  testWidgets('Import PDF → Extract Text opens the existing import screen', (
+  testWidgets('OCR Scanner -> Import PDF opens the existing import screen', (
     tester,
   ) async {
     await pumpApp(tester);
-    await tapVisible(tester, find.text('Import PDF'));
+    await tapVisible(tester, find.byKey(const Key('home-extract-text')));
     await tester.pumpAndSettle();
-    await tapVisible(tester, find.text('Extract Text'));
+    await tapVisible(tester, find.text('Import PDF'));
     await tester.pumpAndSettle();
 
     // The import screen is reached without touching a picker or the native

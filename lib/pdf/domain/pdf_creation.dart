@@ -45,6 +45,29 @@ class CreatedPdf {
   String toString() => 'CreatedPdf($fileName, $summaryLabel, $path)';
 }
 
+/// How hard the writer works to keep the output small.
+///
+/// [standard] embeds each selected image as it is: best quality, largest file.
+/// [compress] re-encodes every page image at a bounded resolution and JPEG
+/// quality before embedding, which makes photo-heavy documents much smaller
+/// while keeping printed text legible. The user's source images are never
+/// modified.
+enum PdfCompression { standard, compress }
+
+extension PdfCompressionText on PdfCompression {
+  String get label => switch (this) {
+    PdfCompression.standard => 'Standard',
+    PdfCompression.compress => 'Compress',
+  };
+
+  /// One line, under the choice, saying what it does.
+  String get explanation => switch (this) {
+    PdfCompression.standard => 'Best quality.',
+    PdfCompression.compress =>
+      'Reduce PDF size with slightly lower image quality.',
+  };
+}
+
 /// Builds a PDF from a list of page images.
 ///
 /// The sibling of `PdfPageRenderer`, which runs the other way: that one turns a
@@ -65,12 +88,17 @@ abstract class PdfCreationService {
   /// [onProgress] reports `(completed, total)` after each page is embedded, which
   /// is the slow part on a phone.
   ///
+  /// [compression] selects whether the page images are embedded unchanged or
+  /// re-encoded smaller first. It must actually change the produced bytes; a
+  /// writer that cannot honour it should fail rather than silently ignore it.
+  ///
   /// Throws `PdfException` when there is nothing to write, when a page image
   /// cannot be read, or when the document cannot be written.
   Future<CreatedPdf> create({
     required List<String> pageImagePaths,
     String fileName = defaultFileName,
     void Function(int completed, int total)? onProgress,
+    PdfCompression compression = PdfCompression.standard,
   });
 
   /// The name used when the user has not chosen one.

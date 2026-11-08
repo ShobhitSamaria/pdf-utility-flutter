@@ -185,6 +185,59 @@ void main() {
       );
     });
 
+    testWidgets('a grown translation never paints over the paragraph below it', (
+      tester,
+    ) async {
+      // Three tightly stacked form rows — a shipping label's SKU / invoice
+      // lines. Each source row is one printed line tall, and each English
+      // translation needs more than that, so the first row's box grows down
+      // into the second row's source box. Placing the second row at its source
+      // top painted one translation over the other on a real label; the deck
+      // must push it below the drawn box instead.
+      final overlay = _overlay([
+        _paragraph(
+          id: 0,
+          bounds: OcrRect.fromLTRB(100, 100, 900, 140),
+          text: 'Product description: a mask pack that needs two lines.',
+        ),
+        _paragraph(
+          id: 1,
+          bounds: OcrRect.fromLTRB(100, 142, 900, 182),
+          text: 'SKU : 8809435405358 QTY.: 1',
+        ),
+        _paragraph(
+          id: 2,
+          bounds: OcrRect.fromLTRB(100, 184, 900, 224),
+          text: 'Invoice No. :Retail219038 | Invoice Date :2026-10-23',
+        ),
+      ]);
+
+      await tester.pumpWidget(_harness(overlay, size: const Size(500, 1000)));
+      await tester.pump();
+
+      final rects = <Rect>[
+        for (var index = 0; index < 3; index++)
+          if (find
+              .byKey(ValueKey<String>('translated-region-$index'))
+              .evaluate()
+              .isNotEmpty)
+            tester.getRect(
+              find.byKey(ValueKey<String>('translated-region-$index')),
+            ),
+      ];
+      expect(rects, hasLength(3));
+      for (var first = 0; first < rects.length; first++) {
+        for (var second = first + 1; second < rects.length; second++) {
+          expect(
+            rects[first].overlaps(rects[second]),
+            isFalse,
+            reason: 'rows $first and $second overlap: $rects',
+          );
+        }
+      }
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('a dense page keeps every paragraph in the full text', (
       tester,
     ) async {

@@ -14,13 +14,8 @@ PdfTextPage _page({
   runs: runs,
 );
 
-PdfTextRun _run(String text, double left, double right) => PdfTextRun(
-  text: text,
-  left: left,
-  top: 0.2,
-  right: right,
-  bottom: 0.3,
-);
+PdfTextRun _run(String text, double left, double right) =>
+    PdfTextRun(text: text, left: left, top: 0.2, right: right, bottom: 0.3);
 
 void main() {
   test('English search is case-insensitive', () {
@@ -69,10 +64,7 @@ void main() {
     final layer = PdfTextLayer(
       pages: [
         _page(
-          runs: [
-            _run('Invoice', 0.05, 0.25),
-            _run('पवन सामरिया', 0.3, 0.8),
-          ],
+          runs: [_run('Invoice', 0.05, 0.25), _run('पवन सामरिया', 0.3, 0.8)],
         ),
       ],
     );
@@ -108,10 +100,7 @@ void main() {
   test('matches are reported on the page they belong to', () {
     final layer = PdfTextLayer(
       pages: [
-        _page(
-          pageNumber: 1,
-          runs: [_run('Recovery 80', 0.05, 0.6)],
-        ),
+        _page(pageNumber: 1, runs: [_run('Recovery 80', 0.05, 0.6)]),
         _page(
           pageNumber: 2,
           width: 800,
@@ -156,11 +145,7 @@ void main() {
   test('the match cap bounds a one-letter query', () {
     final layer = PdfTextLayer(
       pages: [
-        _page(
-          runs: [
-            _run('a a a a a a', 0.05, 0.6),
-          ],
-        ),
+        _page(runs: [_run('a a a a a a', 0.05, 0.6)]),
       ],
     );
 

@@ -443,26 +443,12 @@ void main() {
     );
   });
 
-  testWidgets('the block backing masks the original words', (tester) async {
-    await tester.pumpWidget(
-      const MaterialApp(home: Center(child: TranslatedBlockPill())),
-    );
-
-    final decorations = tester
-        .widgetList<DecoratedBox>(
-          find.descendant(
-            of: find.byType(TranslatedBlockPill),
-            matching: find.byType(DecoratedBox),
-          ),
-        )
-        .map((box) => box.decoration)
-        .whereType<BoxDecoration>()
-        .where((decoration) => decoration.color != null)
-        .toList();
-
-    expect(decorations, isNotEmpty);
-    final alpha = decorations.last.color!.a;
-    expect(alpha, greaterThanOrEqualTo(0.9));
-    expect(alpha, TranslatedBlockPill.backingAlpha);
+  test('the translation backing masks print without erasing the photo', () {
+    // Each translated line paints its own paper-toned surface, because the
+    // source language stays visible in the photograph underneath. It has to be
+    // opaque enough to hide that print, and not so opaque that the page turns
+    // into a grid of solid cards.
+    expect(translatedTextBacking.a, greaterThanOrEqualTo(0.86));
+    expect(translatedTextBacking.a, lessThan(1.0));
   });
 }
