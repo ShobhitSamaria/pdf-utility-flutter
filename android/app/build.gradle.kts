@@ -1,7 +1,19 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing credentials live outside version control. The file is
+// created by the project owner and is never read into the build log.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasReleaseSigning = keystorePropertiesFile.exists()
+val keystoreProperties = Properties()
+if (hasReleaseSigning) {
+    FileInputStream(keystorePropertiesFile).use { keystoreProperties.load(it) }
 }
 
 android {
@@ -25,17 +37,47 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Production artifacts use the owner's upload key only. When
+            // key.properties is absent the build fails below rather than
+            // silently falling back to the debug certificate.
+            signingConfig = signingConfigs.findByName("release")
             // NOTE: no proguardFiles() here on purpose. When shrinking is
             // enabled, Flutter's Gradle plugin already adds the default rules,
             // its own `flutter_proguard_rules.pro`, and
             // `android/app/proguard-rules.pro` if that file exists (see
             // FlutterPlugin.kt). Declaring them again would duplicate the
             // defaults for no benefit.
+        }
+    }
+}
+
+// Refuse to produce an unsigned or debug-signed production artifact. Debug
+// builds and debug signing are untouched.
+if (!hasReleaseSigning) {
+    gradle.taskGraph.whenReady {
+        val releaseArtifact = allTasks.any {
+            it.name == "bundleRelease" ||
+                it.name == "assembleRelease" ||
+                it.name == "packageReleaseBundle"
+        }
+        if (releaseArtifact) {
+            throw GradleException(
+                "Release signing is not configured. Create android/key.properties " +
+                    "with storePassword, keyPassword, keyAlias and storeFile."
+            )
         }
     }
 }
